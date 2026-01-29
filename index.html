@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Soul Host Runner</title>
+    <style>
+        body {
+            background: #1a1a1a;
+            color: #fff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        canvas {
+            border: 2px solid #555;
+            background: #000;
+            margin-top: 20px;
+        }
+
+        #console {
+            width: 800px;
+            height: 300px;
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            overflow-y: auto;
+            margin-top: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Soul Polyglot Runtime</h1>
+    <div style="margin-bottom: 10px;">
+        <label for="demo-select">Program to run:</label>
+        <select id="demo-select" onchange="window.location.search = '?demo=' + this.value">
+            <optgroup label="Built-in payload demos">
+                <option value="payload-c" selected>C payload demo (embedded)</option>
+                <option value="payload-cs">C# payload demo (embedded)</option>
+            </optgroup>
+            <optgroup label="Compiled .casm files in this folder">
+                <option value="file-hello">hello.casm (from examples/hello.c)</option>
+                <option value="file-sanity">sanity.casm (from examples/sanity.c)</option>
+            </optgroup>
+            <optgroup label="From your computer">
+                <option value="upload">Choose local .casm file…</option>
+            </optgroup>
+        </select>
+    </div>
+    <div style="margin-bottom: 20px;">
+        <input type="file" id="file-input" accept=".casm" style="display:none;" />
+    </div>
+    <div id="status">Initializing...</div>
+    <div id="console"></div>
+
+    <script src="src/runtime/runtime.js"></script>
+    <script>
+        const originalLog = console.log;
+        const consoleDiv = document.getElementById('console');
+        console.log = (...args) => {
+            originalLog(...args);
+            consoleDiv.innerHTML += args.join(' ') + '\n';
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        };
+
+        const config = {
+            maxMemory: 2 * 1024 * 1024,
+            maxCores: 4
+        };
+
+        const vm = new SoulVM(config);
+        vm.variables.set('printf', () => { vm.handleSyscall(0x60); return 0; });
+        vm.variables.set('Console.WriteLine', () => { vm.handleSyscall(0x60); return 0; });
+        vm.variables.set('fopen', () => { vm.handleSyscall(0x70); return vm.stack.pop(); });
+        vm.variables.set('fprintf', () => { vm.handleSyscall(0x71); return 0; });
+        vm.variables.set('fclose', () => { vm.handleSyscall(0x72); return 0; });
+
+        const params = new URLSearchParams(window.location.search);
+        const demo = params.get('demo') || 'payload-c';
+        const selectEl = document.getElementById('demo-select');
+        const fileInput = document.getElementById('file-input');
+        selectEl.value = demo;
+
+        async function start() {
+            const statusEl = document.getElementById('status');
+            try {
+                // Local file upload mode
+                if (demo === 'upload') {
+                    statusEl.innerText = 'Choose a local .casm file to run.';
+                    fileInput.style.display = 'inline-block';
+                    fileInput.onchange = async () => {
+                        if (!fileInput.files || fileInput.files.length === 0) return;
+                        const file = fileInput.files[0];
+                        statusEl.innerText = `Loading ${file.name}...`;
+                        try {
+                            const buf = await file.arrayBuffer();
+                            await vm.load(new Uint8Array(buf));
+                            vm.run();
+                            statusEl.innerText = `Execution Finished (${file.name}).`;
+                        } catch (e) {
+                            statusEl.innerText = `Error: ${e.message}`;
+                            console.error(e);
+                        }
+                    };
+                    return;
+                }
+
+                // Built-in / project .casm modes
+                let source;
+                switch (demo) {
+                    case 'payload-cs':
+                        source = SoulVM.payloads.cs;
+                        break;
+                    case 'file-hello':
+                        source = 'hello.casm';
+                        break;
+                    case 'file-sanity':
+                        source = 'sanity.casm';
+                        break;
+                    case 'payload-c':
+                    default:
+                        source = SoulVM.payloads.c;
+                        break;
+                }
+                statusEl.innerText = `Running ${demo}...`;
+                await vm.load(source);
+                vm.run();
+                statusEl.innerText = `Execution Finished.`;
+            } catch (err) {
+                document.getElementById('status').innerText = `Error: ${err.message}`;
+                console.error(err);
+            }
+        }
+        start();
+    </script>
+</body>
+
+</html>
