@@ -1,6 +1,9 @@
 # Soul Polyglot / CASM (Compiled Assembly)
 
 Soul Polyglot is a powerful, multi-paradigm programming language that bridges the gap between high-level Pythonicity and low-level C capabilities. It compiles source code into **.casm** (Compiled Assembly), a compact bytecode format executed by the cross-platform SoulVM.
+> [!NOTE]
+> In the readme when .soul is sayed it means Python, , C , and C++ 
+
 
 ## 🚀 Features
 
@@ -224,3 +227,4 @@ Followed by a sequence of OpCodes and Operands.
 ---
 
 *Soul Polyglot: One language to rule them all.*
+
