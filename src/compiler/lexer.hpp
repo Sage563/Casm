@@ -5,7 +5,7 @@
 
 enum class TokenType {
     IDENTIFIER, KEYWORD, INTEGER, STRING,
-    PLUS, MINUS, STAR, SLASH, 
+    PLUS, MINUS, STAR, SLASH,
     EQUALS, EQUALS_EQUALS,
     LPAREN, RPAREN, LBRACE, RBRACE,
     COLON, SEMICOLON, COMMA, DOT,
@@ -13,6 +13,10 @@ enum class TokenType {
     LBRACKET, RBRACKET,
     PLUS_PLUS, MINUS_MINUS,
     INDENT, DEDENT, // For Python
+    // C++ alternative / compound operators
+    LAND, LOR, NOT, NOT_EQ,           // &&, ||, !, !=  and  and, or, not, not_eq
+    TILDE, CARET, PIPE,               // ~, ^, |  and  compl, xor, bitor
+    AND_EQ, OR_EQ, XOR_EQ,            // &=, |=, ^=  and  and_eq, or_eq, xor_eq
     END_OF_FILE, UNKNOWN
 };
 
@@ -132,6 +136,7 @@ private:
         }
         TokenType type = TokenType::IDENTIFIER;
         static const std::map<std::string, TokenType> keywords = {
+            // C/C++ core
             {"int", TokenType::KEYWORD}, {"if", TokenType::KEYWORD}, {"else", TokenType::KEYWORD},
             {"while", TokenType::KEYWORD}, {"def", TokenType::KEYWORD}, {"return", TokenType::KEYWORD},
             {"class", TokenType::KEYWORD}, {"print", TokenType::KEYWORD}, {"import", TokenType::KEYWORD},
@@ -143,9 +148,48 @@ private:
             {"None", TokenType::KEYWORD}, {"private", TokenType::KEYWORD}, {"protected", TokenType::KEYWORD},
             {"typedef", TokenType::KEYWORD}, {"struct", TokenType::KEYWORD}, {"union", TokenType::KEYWORD},
             {"enum", TokenType::KEYWORD}, {"bool", TokenType::KEYWORD}, {"true", TokenType::KEYWORD},
-            {"false", TokenType::KEYWORD}
+            {"false", TokenType::KEYWORD},
+            // C++ alternative operators (lex as operator tokens)
+            {"and", TokenType::LAND}, {"or", TokenType::LOR}, {"not", TokenType::NOT}, {"not_eq", TokenType::NOT_EQ},
+            {"bitand", TokenType::AMPERSAND}, {"bitor", TokenType::PIPE}, {"compl", TokenType::TILDE},
+            {"xor", TokenType::CARET}, {"and_eq", TokenType::AND_EQ}, {"or_eq", TokenType::OR_EQ}, {"xor_eq", TokenType::XOR_EQ},
+            // C++ keywords (alignas, alignof, and rest)
+            {"alignas", TokenType::KEYWORD}, {"alignof", TokenType::KEYWORD}, {"asm", TokenType::KEYWORD},
+            {"auto", TokenType::KEYWORD}, {"break", TokenType::KEYWORD}, {"case", TokenType::KEYWORD},
+            {"catch", TokenType::KEYWORD}, {"char", TokenType::KEYWORD}, {"char8_t", TokenType::KEYWORD},
+            {"char16_t", TokenType::KEYWORD}, {"char32_t", TokenType::KEYWORD}, {"concept", TokenType::KEYWORD},
+            {"const", TokenType::KEYWORD}, {"consteval", TokenType::KEYWORD}, {"constexpr", TokenType::KEYWORD},
+            {"constinit", TokenType::KEYWORD}, {"const_cast", TokenType::KEYWORD}, {"co_await", TokenType::KEYWORD},
+            {"co_return", TokenType::KEYWORD}, {"co_yield", TokenType::KEYWORD}, {"decltype", TokenType::KEYWORD},
+            {"default", TokenType::KEYWORD}, {"delete", TokenType::KEYWORD}, {"do", TokenType::KEYWORD},
+            {"double", TokenType::KEYWORD}, {"dynamic_cast", TokenType::KEYWORD}, {"explicit", TokenType::KEYWORD},
+            {"export", TokenType::KEYWORD}, {"extern", TokenType::KEYWORD}, {"float", TokenType::KEYWORD},
+            {"friend", TokenType::KEYWORD}, {"goto", TokenType::KEYWORD}, {"inline", TokenType::KEYWORD},
+            {"long", TokenType::KEYWORD}, {"module", TokenType::KEYWORD}, {"mutable", TokenType::KEYWORD},
+            {"new", TokenType::KEYWORD}, {"noexcept", TokenType::KEYWORD}, {"nullptr", TokenType::KEYWORD},
+            {"operator", TokenType::KEYWORD}, {"register", TokenType::KEYWORD}, {"reinterpret_cast", TokenType::KEYWORD},
+            {"requires", TokenType::KEYWORD}, {"short", TokenType::KEYWORD}, {"signed", TokenType::KEYWORD},
+            {"sizeof", TokenType::KEYWORD}, {"static_assert", TokenType::KEYWORD}, {"static_cast", TokenType::KEYWORD},
+            {"switch", TokenType::KEYWORD}, {"template", TokenType::KEYWORD}, {"this", TokenType::KEYWORD},
+            {"thread_local", TokenType::KEYWORD}, {"throw", TokenType::KEYWORD}, {"typeid", TokenType::KEYWORD},
+            {"typename", TokenType::KEYWORD}, {"unsigned", TokenType::KEYWORD}, {"virtual", TokenType::KEYWORD},
+            {"volatile", TokenType::KEYWORD}, {"wchar_t", TokenType::KEYWORD},
+            // C11 / C23 underscore-prefixed keywords
+            {"_Alignas", TokenType::KEYWORD}, {"_Alignof", TokenType::KEYWORD}, {"_Atomic", TokenType::KEYWORD},
+            {"_Bool", TokenType::KEYWORD}, {"_Complex", TokenType::KEYWORD}, {"_Generic", TokenType::KEYWORD},
+            {"_Imaginary", TokenType::KEYWORD}, {"_Noreturn", TokenType::KEYWORD},
+            {"_Static_assert", TokenType::KEYWORD}, {"_Thread_local", TokenType::KEYWORD},
+            // C99 / C23 additional
+            {"restrict", TokenType::KEYWORD}, {"typeof", TokenType::KEYWORD}, {"typeof_unqual", TokenType::KEYWORD},
+            // Python keywords
+            {"pass", TokenType::KEYWORD}, {"del", TokenType::KEYWORD}, {"global", TokenType::KEYWORD},
+            {"nonlocal", TokenType::KEYWORD}, {"lambda", TokenType::KEYWORD}, {"with", TokenType::KEYWORD},
+            {"yield", TokenType::KEYWORD}, {"async", TokenType::KEYWORD}, {"await", TokenType::KEYWORD},
+            {"from", TokenType::KEYWORD}, {"elif", TokenType::KEYWORD}, {"is", TokenType::KEYWORD},
+            {"assert", TokenType::KEYWORD}, {"match", TokenType::KEYWORD},
+            {"__module__", TokenType::KEYWORD}, {"__endmodule__", TokenType::KEYWORD}
         };
-        if (keywords.count(val)) type = TokenType::KEYWORD;
+        if (keywords.count(val)) type = keywords.at(val);
         return {type, val, line};
     }
 
@@ -179,29 +223,40 @@ private:
     Token readOperator() {
         char current = source[pos++];
         switch (current) {
-            case '+': 
+            case '+':
                 if (source[pos] == '+') { pos++; return {TokenType::PLUS_PLUS, "++", line}; }
                 return {TokenType::PLUS, "+", line};
-            case '-': 
+            case '-':
                 if (source[pos] == '-') { pos++; return {TokenType::MINUS_MINUS, "--", line}; }
                 if (source[pos] == '>') { pos++; return {TokenType::ARROW, "->", line}; }
                 return {TokenType::MINUS, "-", line};
             case '*': return {TokenType::STAR, "*", line};
             case '/': return {TokenType::SLASH, "/", line};
-            case '&': return {TokenType::AMPERSAND, "&", line}; // ADDED
-            case '.': return {TokenType::DOT, ".", line}; // ADDED
-            case '=': 
-                if (source[pos] == '=') {
-                    pos++;
-                    return {TokenType::EQUALS_EQUALS, "==", line};
-                }
+            case '&':
+                if (pos < source.length() && source[pos] == '&') { pos++; return {TokenType::LAND, "&&", line}; }
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::AND_EQ, "&=", line}; }
+                return {TokenType::AMPERSAND, "&", line};
+            case '|':
+                if (pos < source.length() && source[pos] == '|') { pos++; return {TokenType::LOR, "||", line}; }
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::OR_EQ, "|=", line}; }
+                return {TokenType::PIPE, "|", line};
+            case '!':
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::NOT_EQ, "!=", line}; }
+                return {TokenType::NOT, "!", line};
+            case '~': return {TokenType::TILDE, "~", line};
+            case '^':
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::XOR_EQ, "^=", line}; }
+                return {TokenType::CARET, "^", line};
+            case '.': return {TokenType::DOT, ".", line};
+            case '=':
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::EQUALS_EQUALS, "==", line}; }
                 return {TokenType::EQUALS, "=", line};
             case '(': return {TokenType::LPAREN, "(", line};
             case ')': return {TokenType::RPAREN, ")", line};
             case '{': return {TokenType::LBRACE, "{", line};
             case '}': return {TokenType::RBRACE, "}", line};
-            case '[': return {TokenType::LBRACKET, "[", line}; // ADDED
-            case ']': return {TokenType::RBRACKET, "]", line}; // ADDED
+            case '[': return {TokenType::LBRACKET, "[", line};
+            case ']': return {TokenType::RBRACKET, "]", line};
             case ':': return {TokenType::COLON, ":", line};
             case ';': return {TokenType::SEMICOLON, ";", line};
             case ',': return {TokenType::COMMA, ",", line};

@@ -61,9 +61,12 @@ class SoulVM {
 
         // Memory Management
         this.freeList = null;
+        this.allocatedSizes = new Map(); // addr -> size for free(ptr)
 
         // Improved RAM FS
         this.ramFS = new Map();
+        this.atexitHandlers = [];
+        this.atQuickExitHandlers = [];
 
         // Detect Environment
         this.isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
@@ -106,6 +109,7 @@ class SoulVM {
                     if (prev) prev.next = curr.next;
                     else this.freeList = curr.next;
                 }
+                this.allocatedSizes.set(addr, size);
                 return addr;
             }
             prev = curr;
@@ -114,12 +118,30 @@ class SoulVM {
         const addr = this.heapOffset;
         this.heapOffset += size;
         if (this.heapOffset > this.config.maxMemory) throw new Error("Out of memory");
+        this.allocatedSizes.set(addr, size);
         return addr;
     }
 
     free(addr, size) {
         const block = new FreeBlock(addr, size, this.freeList);
         this.freeList = block;
+        this.allocatedSizes.delete(addr);
+    }
+
+    freeByAddr(addr) {
+        const size = this.allocatedSizes.get(addr);
+        if (size != null) {
+            this.free(addr, size);
+        }
+    }
+
+    realloc(ptr, newSize) {
+        const oldSize = this.allocatedSizes.get(ptr) || 0;
+        const newAddr = this.malloc(newSize);
+        const copyLen = Math.min(oldSize, newSize);
+        for (let i = 0; i < copyLen; i++) this.memory[newAddr + i] = this.memory[ptr + i];
+        this.freeByAddr(ptr);
+        return newAddr;
     }
 
     async load(res) {
@@ -162,6 +184,7 @@ class SoulVM {
                 case 0x06: this.stack.push(this.stack.pop() + this.stack.pop()); break;
                 case 0x07: { const b = this.stack.pop(); this.stack.push(this.stack.pop() - b); } break;
                 case 0x08: this.stack.push(this.stack.pop() * this.stack.pop()); break;
+                case 0x09: { const b = this.stack.pop(); const a = this.stack.pop(); this.stack.push(b !== 0 ? Math.floor(a / b) : 0); } break;
                 case 0x0A: // JMP (Inlined)
                     this.pc = (bc[this.pc++] << 24) | (bc[this.pc++] << 16) | (bc[this.pc++] << 8) | (bc[this.pc++]);
                     break;
@@ -204,11 +227,13 @@ class SoulVM {
             case 0x52: {
                 const sz = this.bytecode[this.pc++]; const a = this.stack.pop();
                 if (sz === 1) this.stack.push(this.memory[a]);
+                else if (sz === 8) this.stack.push(new DataView(this.memory.buffer).getFloat64(a, true));
                 else this.stack.push(new DataView(this.memory.buffer).getInt32(a, true));
             } break;
             case 0x53: {
                 const sz = this.bytecode[this.pc++]; const v = this.stack.pop(); const a = this.stack.pop();
                 if (sz === 1) this.memory[a] = v & 0xFF;
+                else if (sz === 8) new DataView(this.memory.buffer).setFloat64(a, v, true);
                 else new DataView(this.memory.buffer).setInt32(a, v, true);
             } break;
             case 0x54: this.readString(); this.stack.push(this.malloc(16)); break;
@@ -283,6 +308,8 @@ class SoulVM {
                     }
                     this.print(out);
                 } break;
+            case 0x61: // puts(s) — C: print string + newline
+                { const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) args.unshift(this.stack.pop()); const s = args[0]; this.print(this.getString(s) + '\n'); } break;
             case 0x70: // fopen
                 {
                     this.stack.pop(); const mode = this.getString(this.stack.pop()); const path = this.getString(this.stack.pop());
@@ -314,10 +341,126 @@ class SoulVM {
                 } break;
             case 0x72: // fclose
                 { this.stack.pop(); const fd = this.stack.pop(); const h = this.handles.get(fd); if (h && h.node) this.fs.closeSync(h.fd); this.handles.delete(fd); } break;
-            // ... (Other syscalls simpler)
             case 0x62: this.stack.push(this.getString(this.stack.pop()).length); break;
+            case 0x63: // len(x) or obj.size(): string, array, Set, Map
+                {
+                    const count = this.stack.pop();
+                    let v;
+                    if (count === 0) { v = this.stack.pop(); } else { const args = []; for (let i = 0; i < count; i++) args.unshift(this.stack.pop()); v = args[0]; }
+                    if (typeof v === 'string') this.stack.push(v.length);
+                    else if (Array.isArray(v)) this.stack.push(v.length);
+                    else if (v instanceof Set) this.stack.push(v.size);
+                    else if (v instanceof Map) this.stack.push(v.size);
+                    else this.stack.push(0);
+                } break;
             case 0x80: this.stack.push(Math.floor(Date.now() / 1000)); break;
             case 0x81: this.stack.pop(); this.stack.push(new Date().toLocaleString()); break;
+
+            // C++ list methods (stack: ...args, obj, count -> pop count, pop args, pop obj)
+            case 0xA8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const self = this.stack.pop(); const other = a[0]; if (Array.isArray(self) && Array.isArray(other)) { self.length = 0; self.push(...other); } } break;
+            case 0xA9: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l[0] : undefined); } break;
+            case 0xAA: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l[l.length - 1] : undefined); } break;
+            case 0xAB: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(0); } break;
+            case 0xAC: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.length : 0); } break;
+            case 0xAD: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? Math.max(0, l.length - 1) : 0); } break;
+            case 0xAE: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.length : 0); } break;
+            case 0xAF: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length === 0 ? 1 : 0); } break;
+            case 0xB4: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); this.stack.pop(); this.stack.push(2147483647); } break;
+            case 0xB5: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.length = 0; } break;
+            case 0xB6: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) { const pos = a[0] | 0; for (let i = n - 1; i >= 1; i--) l.splice(pos, 0, a[i]); } } break;
+            case 0xB7: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) l.splice(a[0] | 0, 1); } break;
+            case 0xB8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) l.unshift(a[0]); } break;
+            case 0xB9: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const r = a[0]; if (Array.isArray(l) && Array.isArray(r)) for (let i = r.length - 1; i >= 0; i--) l.unshift(r[i]); } break;
+            case 0xBA: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) for (let i = 0; i < a[0].length; i++) l.push(a[0][i]); } break;
+            case 0xBB: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l)) l.length = (a[0] | 0) >= 0 ? (a[0] | 0) : 0; } break;
+            case 0xBC: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const o = a[0]; if (Array.isArray(l) && Array.isArray(o)) { const t = l.slice(); l.length = 0; l.push(...o); o.length = 0; o.push(...t); } } break;
+            case 0xBD: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)); } break;
+            case 0xBE: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) { let j = 0; for (let i = 1; i < l.length; i++) if (l[i] !== l[j]) l[++j] = l[i]; l.length = j + 1; } } break;
+            case 0xBF: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.reverse(); } break;
+            case 0xC3: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const other = a[0]; if (Array.isArray(l) && Array.isArray(other)) { const merged = l.concat(other).sort((x, y) => (x < y ? -1 : x > y ? 1 : 0)); l.length = 0; l.push(...merged); } } break;
+            case 0xC4: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const other = a[0], pos = a[1] | 0; if (Array.isArray(l) && Array.isArray(other) && n >= 2) { const els = other.splice(0); for (let i = els.length - 1; i >= 0; i--) l.splice(pos, 0, els[i]); } } break;
+            case 0xC5: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const val = a[0]; if (Array.isArray(l)) { let j = 0; for (let i = 0; i < l.length; i++) if (l[i] !== val) l[j++] = l[i]; l.length = j; } } break;
+            case 0xC6: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const pred = a[0]; if (Array.isArray(l) && typeof pred === 'function') { let j = 0; for (let i = 0; i < l.length; i++) if (!pred(l[i])) l[j++] = l[i]; l.length = j; } } break;
+            case 0xC7: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const o = a[0]; const eq = Array.isArray(l) && Array.isArray(o) && l.length === o.length && l.every((x, i) => x === o[i]); this.stack.push(eq ? 1 : 0); } break;
+            case 0xC8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const o = a[0]; let cmp = 0; if (Array.isArray(l) && Array.isArray(o)) { for (let i = 0; i < Math.min(l.length, o.length); i++) { if (l[i] < o[i]) { cmp = -1; break; } if (l[i] > o[i]) { cmp = 1; break; } } if (cmp === 0) cmp = l.length < o.length ? -1 : l.length > o.length ? 1 : 0; } this.stack.push(cmp); } break;
+            case 0x96: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) l.push(a[0]); } break;
+            case 0x97: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l.shift() : undefined); } break;
+            case 0x98: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l.pop() : undefined); } break;
+
+            // C memory
+            case 0xD0: { this.stack.pop(); const n = this.stack.pop(); this.stack.push(this.malloc(n)); } break;
+            case 0xD1: { this.stack.pop(); const sz = this.stack.pop(); const nm = this.stack.pop(); const a = this.malloc(nm * sz); for (let i = 0; i < nm * sz; i++) this.memory[a + i] = 0; this.stack.push(a); } break;
+            case 0xD2: { this.stack.pop(); const nsz = this.stack.pop(); const ptr = this.stack.pop(); this.stack.push(this.realloc(ptr, nsz)); } break;
+            case 0xD3: { this.stack.pop(); const ptr = this.stack.pop(); this.freeByAddr(ptr); } break;
+            // C string conversions (arg = string or address)
+            case 0xD4: case 0xD5: case 0xD6: case 0xD7: case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: {
+                this.stack.pop();
+                const s = this.stack.pop();
+                const str = typeof s === 'string' ? s : this.getString(s);
+                const isFloat = (id === 0xD4 || id === 0xD8 || id === 0xD9 || id === 0xDB);
+                this.stack.push(isFloat ? parseFloat(str) : (parseInt(str, 10) | 0));
+            } break;
+            // C process control
+            case 0xE0: if (this.isNode) process.exit(1); else this.running = false; break;
+            case 0xE1: if (this.isNode) process.exit(this.stack.pop() || 0); break;
+            case 0xE2: { this.stack.pop(); const fn = this.stack.pop(); if (typeof fn === 'number' && this.variables) this.atexitHandlers.push(fn); } break;
+            case 0xE3: { this.stack.pop(); const fn = this.stack.pop(); if (typeof fn === 'number') this.atQuickExitHandlers.push(fn); } break;
+            case 0xE4: if (this.isNode) { while (this.atQuickExitHandlers.length) this.atQuickExitHandlers.pop(); process.exit(this.stack.pop() || 0); } break;
+            case 0xE5: { this.stack.pop(); const k = this.getString(this.stack.pop()); this.stack.push(this.isNode && process.env ? (process.env[k] || 0) : 0); } break;
+            case 0xE6: { // bsearch: key, base (array), nmemb, size, compar -> index or 0
+                this.stack.pop();
+                const comparFn = this.stack.pop();
+                const elemSize = this.stack.pop();
+                const nnmemb = this.stack.pop();
+                const baseArr = this.stack.pop();
+                const key = this.stack.pop();
+                const arr = Array.isArray(baseArr) ? baseArr : [];
+                let lo = 0, hi = nnmemb - 1;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >>> 1;
+                    const elem = arr[mid];
+                    const cmp = typeof comparFn === 'function' ? comparFn.call(this, key, elem) : (key < elem ? -1 : key > elem ? 1 : 0);
+                    if (cmp === 0) { this.stack.push(mid); break; }
+                    if (cmp < 0) hi = mid - 1; else lo = mid + 1;
+                }
+                if (lo > hi) this.stack.push(-1);
+            } break;
+            case 0xE7: { // qsort: base, nmemb, size, compar (sorts array in place)
+                this.stack.pop();
+                const comparFn = this.stack.pop();
+                const elemSize = this.stack.pop();
+                const nmemb = this.stack.pop();
+                const baseArr = this.stack.pop();
+                if (Array.isArray(baseArr)) baseArr.sort(typeof comparFn === 'function' ? (a, b) => comparFn.call(this, a, b) : (a, b) => a - b);
+            } break;
+
+            // Python / cross-language builtins (stack: args..., count)
+            case 0xC9: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const x = a[0]; this.stack.push(Array.isArray(x) ? x.slice().reverse() : (typeof x === 'string' ? x.split('').reverse().join('') : [])); } break;
+            case 0xE8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const start = n === 1 ? 0 : (a[0] | 0); const stop = n === 1 ? (a[0] | 0) : (a[1] | 0); const step = n >= 3 ? (a[2] | 0) : 1; const st = step === 0 ? 1 : step; const out = []; for (let i = start; st > 0 ? i < stop : i > stop; i += st) out.push(i); this.stack.push(out); } break;
+            case 0xE9: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(n === 0 ? undefined : (Array.isArray(a[0]) ? Math.min(...a[0]) : (n === 1 ? a[0] : Math.min(...a)))); } break;
+            case 0xEA: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(n === 0 ? undefined : (Array.isArray(a[0]) ? Math.max(...a[0]) : (n === 1 ? a[0] : Math.max(...a)))); } break;
+            case 0xEB: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const x = a[0]; const arr = Array.isArray(x) ? x : []; this.stack.push(arr.reduce((s, v) => s + (typeof v === 'number' ? v : 0), (n >= 2 ? (a[1] | 0) : 0))); } break;
+            case 0xEC: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const x = a[0]; this.stack.push(Array.isArray(x) ? x.slice().sort((p, q) => (p < q ? -1 : p > q ? 1 : 0)) : []); } break;
+            case 0xED: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const v = n ? a[0] : 0; this.stack.push(typeof v === 'number' ? (v | 0) : (typeof v === 'string' ? parseInt(v, 10) | 0 : (v ? 1 : 0))); } break;
+            case 0xEE: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const v = n ? a[0] : 0; this.stack.push(typeof v === 'number' ? v : (typeof v === 'string' ? parseFloat(v) : (v ? 1 : 0))); } break;
+            case 0xEF: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(String(a[0] != null ? a[0] : '')); } break;
+            case 0xF0: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const v = a[0]; this.stack.push(v ? 1 : 0); } break;
+            case 0xF1: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(Array.isArray(a[0]) ? a[0].slice() : (n ? [a[0]] : [])); } break;
+            case 0xF2: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(String.fromCharCode((a[0] | 0) & 0xFFFF)); } break;
+            case 0xF3: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const s = typeof a[0] === 'string' ? a[0] : this.getString(a[0]); this.stack.push(s.length ? s.charCodeAt(0) : 0); } break;
+            case 0xF4: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const nd = n >= 2 ? (a[1] | 0) : 0; this.stack.push(nd >= 0 ? Math.round(a[0] * Math.pow(10, nd)) / Math.pow(10, nd) : Math.round(a[0])); } break;
+            case 0xF5: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const x = a[0] | 0, y = a[1] | 0; this.stack.push(y !== 0 ? Math.floor(x / y) : 0); this.stack.push(y !== 0 ? x % y : 0); } break;
+            case 0xF6: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const base = a[0], exp = a[1], mod = n >= 3 ? a[2] : undefined; this.stack.push(mod != null ? (Math.pow(base, exp) % mod) : Math.pow(base, exp)); } break;
+            case 0xF7: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const it = Array.isArray(a[0]) ? a[0] : []; this.stack.push(it.length ? (it.every(x => x) ? 1 : 0) : 1); } break;
+            case 0xF8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const it = Array.isArray(a[0]) ? a[0] : []; this.stack.push(it.some(x => x) ? 1 : 0); } break;
+            case 0xF9: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push(JSON.stringify(a[0])); } break;
+            case 0xFA: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push((a[0] | 0).toString(2)); } break;
+            case 0xFB: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push((a[0] | 0).toString(16)); } break;
+            case 0xFC: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); this.stack.push((a[0] | 0).toString(8)); } break;
+            case 0xFD: { this.stack.pop(); this.stack.push(this.config.prompt ? this.config.prompt() : ''); } break;
+            case 0xFE: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const lists = a; const len = Math.min(...lists.map(l => Array.isArray(l) ? l.length : 0)); const out = []; for (let i = 0; i < len; i++) out.push(lists.map(l => l[i])); this.stack.push(out); } break;
+            case 0xFF: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const it = Array.isArray(a[0]) ? a[0] : []; const start = n >= 2 ? (a[1] | 0) : 0; this.stack.push(it.map((v, i) => [start + i, v])); } break;
+            case 0xCA: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const lo = (n >= 2 ? a[0] : 0) | 0; const hi = (n >= 2 ? a[1] : (a[0] | 0)) | 0; const range = hi - lo; this.stack.push(range <= 0 ? lo : lo + Math.floor(Math.random() * range)); } break;
         }
     }
 }

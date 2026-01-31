@@ -6,10 +6,16 @@ Soul Polyglot is a powerful, multi-paradigm programming language that bridges th
 
 *   **Hybrid Syntax**: Write naturally using Python-style indentation, or use C-style includes and pointers.
 *   **Advanced Data Structures**: First-class support for `set`, `dict` (Map), `deque`, `heap`, and `tuple`.
-*   **Module System**: deeply integrated `import` (Python style) and `#include` (C style) pre-processor.
+*   **Module & Package System**: Python-style `import` compiles packages (e.g. `import random`) with **package constants** and functions; C-style `#include`; search paths: `packages/`, `site-packages/`, `lib/`, and `SOUL_PACKAGES` env.
 *   **Real Memory Management**: A proper Heap with a Free List Allocator for dynamic memory (`malloc`/`free`).
 *   **Virtual File System**: A high-performance, in-memory **RamFS** for fast I/O operations, with optional persistence in Node.js.
 *   **Universal Runtime**: Runs anywhere JavaScript runs—Node.js servers, Web Browsers, or massive edge networks.
+
+### Quick start
+
+1. **Build the compiler** (once): `make` (Linux/macOS) or `build.bat` / `.\build.ps1` (Windows).
+2. **Compile** a program: `soulc.exe source.soul program.casm` (or `./soulc` on Linux/macOS).
+3. **Run** it: `node src/runtime/runtime.js program.casm`.
 
 ---
 
@@ -31,6 +37,54 @@ The runtime is a Stack-based Virtual Machine.
 *   **Memory**: It allocates a large `Uint8Array` as physical RAM. It manages a **Heap** within this RAM using a **Free List Allocator**, allowing for efficient memory reuse just like C++.
 *   **Execution**: It runs the bytecode in a tight loop, dispatching OpCodes.
 *   **Syscalls**: Complex operations (File I/O, Printing, Time) are offloaded to "Syscalls" (0x60 - 0xC2).
+
+---
+
+## 🔨 Building the Compiler (soulc)
+
+Before you can compile `.soul` files, you need to build the **soulc** compiler once.
+
+### Prerequisites
+
+- **C++17 compiler** (one of):
+  - **Windows:** [MinGW-w64](https://www.mingw-w64.org/) (g++) or Visual Studio (Developer Command Prompt with `cl`)
+  - **macOS:** Xcode Command Line Tools (`xcode-select --install`) or Homebrew `gcc`
+  - **Linux:** `g++` or `clang++` (e.g. `sudo apt install build-essential`)
+
+- **Node.js** (to run the VM): [nodejs.org](https://nodejs.org/)
+
+### Build steps
+
+**Linux / macOS / WSL:**
+```bash
+make
+```
+Produces `soulc` in the project root.
+
+**Windows (Command Prompt):**
+```cmd
+build.bat
+```
+Produces `soulc.exe` in the project root.
+
+**Windows (PowerShell):**
+```powershell
+.\build.ps1
+```
+
+**Using npm (any platform with g++ in PATH):**
+```bash
+npm run build
+```
+
+After building, you can compile and run programs:
+
+```bash
+soulc.exe myfile.soul myfile.casm
+node src/runtime/runtime.js myfile.casm
+```
+
+On Linux/macOS use `./soulc` instead of `soulc.exe`.
 
 ---
 
@@ -66,6 +120,35 @@ def greet(name):
 soulc.exe main.soul output.casm
 ```
 *The compiler automatically finds `utils.soul` and `config.h` and links them into `output.casm`.*
+
+### Custom packages (pip-style)
+
+Packages are folders or `.soul` / `.py` files the compiler can **import**. When you `import random`, the compiler:
+
+1. Looks for `packages/random.soul`, `packages/random/__init__.soul`, `lib/random.soul`, etc.
+2. Compiles that file with a **module prefix** so all top-level names become `random.xxx`.
+3. **Package constants** (e.g. `RANDOM_MAX = 2147483647`) and **functions** (e.g. `randint(a, b)`) are compiled and available as `random.RANDOM_MAX` and `random.randint(1, 10)`.
+
+**Search order:** current directory → `.` → `packages` → `site-packages` → `lib` → `src` → `include` → `C_INCLUDE_PATH` → `SOUL_PACKAGES` (env).  
+**File order:** `packagename/__init__.soul`, `packagename/__init__.py`, `packagename.soul`, `packagename.py`, then `.h` / `.c`.
+
+**Example — use the built-in `random` package:**
+
+**main.soul**
+```python
+import random
+
+def main():
+    print("Roll:", random.randint(1, 6))
+    print("Max:", random.RANDOM_MAX)
+```
+
+**Add your own package:** put `mypkg.soul` (or `mypkg/__init__.soul`) in `packages/` or a directory listed in `SOUL_PACKAGES`. Use normal Soul syntax; top-level `def` and `name = value` become `mypkg.func` and `mypkg.name`.
+
+```bash
+soulc.exe main.soul output.casm
+node src/runtime/runtime.js output.casm
+```
 
 ---
 
@@ -118,12 +201,13 @@ Stop writing boilerplate. Use the built-in power types.
 | **Deque** | `deque()` | `.push(v)`, `.pop()`, `.shift()` |
 | **String** | `"text"` | `.lower()`, `.upper()`, `.split(sep)`, `.join(list)` |
 
-### Standard Library
-| Module | Functions |
-|--------|-----------|
+### Standard Library & Packages
+| Module | Functions / Constants |
+|--------|------------------------|
 | **math** | `math.pi`, `math.sqrt(x)`, `math.abs(x)`, `math.e` |
 | **time** | `time.sleep(sec)`, `time.now()` |
 | **sys** | `sys.exit(code)`, `os.system(cmd)` |
+| **random** (package) | `random.randint(a, b)`, `random.RANDOM_MAX` |
 
 ---
 

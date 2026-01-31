@@ -1,0 +1,8 @@
+# random package — use: import random
+# random.randint(a, b) -> int in [a, b] inclusive
+# random.RANDOM_MAX    -> constant 2147483647
+
+RANDOM_MAX = 2147483647
+
+def randint(a, b):
+    return __random(a, b + 1)
