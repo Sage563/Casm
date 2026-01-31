@@ -1,7 +1,11 @@
+#ifndef LEXER_HPP
+#define LEXER_HPP
+
 #include <iostream>
 #include <string>
 #include <vector>
 #include <map>
+#include <cctype>
 
 enum class TokenType {
     IDENTIFIER, KEYWORD, INTEGER, STRING,
@@ -12,7 +16,13 @@ enum class TokenType {
     AMPERSAND, ARROW,
     LBRACKET, RBRACKET,
     PLUS_PLUS, MINUS_MINUS,
+    PLUS_EQ, MINUS_EQ, STAR_EQ, SLASH_EQ,
+    LT, GT, LE, GE,
+    LSHIFT, RSHIFT, LSHIFT_EQ, RSHIFT_EQ,
+    MOD, MOD_EQ,
+    COLON_EQUALS, // Walrus operator
     INDENT, DEDENT, // For Python
+    FSTRING_PART, LBRACE_EXP, RBRACE_EXP, // For f-strings
     // C++ alternative / compound operators
     LAND, LOR, NOT, NOT_EQ,           // &&, ||, !, !=  and  and, or, not, not_eq
     TILDE, CARET, PIPE,               // ~, ^, |  and  compl, xor, bitor
@@ -99,7 +109,8 @@ public:
                 }
             } else if (current == 'f' && pos + 1 < source.length() && source[pos+1] == '"') {
                 pos++; // skip 'f'
-                tokens.push_back(readFString());
+                auto fTokens = tokenizeFString();
+                tokens.insert(tokens.end(), fTokens.begin(), fTokens.end());
             } else if (isalpha(current) || current == '_') {
                 tokens.push_back(readIdentifier());
             } else {
@@ -135,7 +146,7 @@ private:
             val += source[pos++];
         }
         TokenType type = TokenType::IDENTIFIER;
-        static const std::map<std::string, TokenType> keywords = {
+        std::map<std::string, TokenType> keywords = {
             // C/C++ core
             {"int", TokenType::KEYWORD}, {"if", TokenType::KEYWORD}, {"else", TokenType::KEYWORD},
             {"while", TokenType::KEYWORD}, {"def", TokenType::KEYWORD}, {"return", TokenType::KEYWORD},
@@ -149,11 +160,11 @@ private:
             {"typedef", TokenType::KEYWORD}, {"struct", TokenType::KEYWORD}, {"union", TokenType::KEYWORD},
             {"enum", TokenType::KEYWORD}, {"bool", TokenType::KEYWORD}, {"true", TokenType::KEYWORD},
             {"false", TokenType::KEYWORD},
-            // C++ alternative operators (lex as operator tokens)
+            // C++ alternative operators
             {"and", TokenType::LAND}, {"or", TokenType::LOR}, {"not", TokenType::NOT}, {"not_eq", TokenType::NOT_EQ},
             {"bitand", TokenType::AMPERSAND}, {"bitor", TokenType::PIPE}, {"compl", TokenType::TILDE},
             {"xor", TokenType::CARET}, {"and_eq", TokenType::AND_EQ}, {"or_eq", TokenType::OR_EQ}, {"xor_eq", TokenType::XOR_EQ},
-            // C++ keywords (alignas, alignof, and rest)
+            // C++ keywords
             {"alignas", TokenType::KEYWORD}, {"alignof", TokenType::KEYWORD}, {"asm", TokenType::KEYWORD},
             {"auto", TokenType::KEYWORD}, {"break", TokenType::KEYWORD}, {"case", TokenType::KEYWORD},
             {"catch", TokenType::KEYWORD}, {"char", TokenType::KEYWORD}, {"char8_t", TokenType::KEYWORD},
@@ -174,14 +185,14 @@ private:
             {"thread_local", TokenType::KEYWORD}, {"throw", TokenType::KEYWORD}, {"typeid", TokenType::KEYWORD},
             {"typename", TokenType::KEYWORD}, {"unsigned", TokenType::KEYWORD}, {"virtual", TokenType::KEYWORD},
             {"volatile", TokenType::KEYWORD}, {"wchar_t", TokenType::KEYWORD},
-            // C11 / C23 underscore-prefixed keywords
+            // C11 / C23
             {"_Alignas", TokenType::KEYWORD}, {"_Alignof", TokenType::KEYWORD}, {"_Atomic", TokenType::KEYWORD},
             {"_Bool", TokenType::KEYWORD}, {"_Complex", TokenType::KEYWORD}, {"_Generic", TokenType::KEYWORD},
             {"_Imaginary", TokenType::KEYWORD}, {"_Noreturn", TokenType::KEYWORD},
             {"_Static_assert", TokenType::KEYWORD}, {"_Thread_local", TokenType::KEYWORD},
-            // C99 / C23 additional
+            // C99 / C23
             {"restrict", TokenType::KEYWORD}, {"typeof", TokenType::KEYWORD}, {"typeof_unqual", TokenType::KEYWORD},
-            // Python keywords
+            // Python
             {"pass", TokenType::KEYWORD}, {"del", TokenType::KEYWORD}, {"global", TokenType::KEYWORD},
             {"nonlocal", TokenType::KEYWORD}, {"lambda", TokenType::KEYWORD}, {"with", TokenType::KEYWORD},
             {"yield", TokenType::KEYWORD}, {"async", TokenType::KEYWORD}, {"await", TokenType::KEYWORD},
@@ -189,7 +200,7 @@ private:
             {"assert", TokenType::KEYWORD}, {"match", TokenType::KEYWORD},
             {"__module__", TokenType::KEYWORD}, {"__endmodule__", TokenType::KEYWORD}
         };
-        if (keywords.count(val)) type = keywords.at(val);
+        if (keywords.count(val)) type = keywords[val];
         return {type, val, line};
     }
 
@@ -212,12 +223,43 @@ private:
         return {TokenType::STRING, val, line};
     }
 
-    Token readFString() {
+    std::vector<Token> tokenizeFString() {
+        std::vector<Token> fTokens;
         pos++; // Skip "
         std::string val;
-        while (pos < source.length() && source[pos] != '"') val += source[pos++];
+        while (pos < source.length() && source[pos] != '"') {
+            if (source[pos] == '{') {
+                if (!val.empty()) fTokens.push_back({TokenType::FSTRING_PART, val, line});
+                val.clear();
+                fTokens.push_back({TokenType::LBRACE_EXP, "{", line});
+                pos++;
+                // Lex inner expression until '}'
+                // This is a simplification: complex expressions with nested braces need balancing
+                std::string expr;
+                int depth = 1;
+                while (pos < source.length() && depth > 0) {
+                    if (source[pos] == '{') depth++;
+                    else if (source[pos] == '}') depth--;
+                    if (depth > 0) expr += source[pos++];
+                }
+                if (pos < source.length()) pos++; // Skip }
+                
+                // Re-lex the expression string
+                Lexer innerLexer(expr, pythonMode);
+                auto innerTokens = innerLexer.tokenize();
+                // Remove END_OF_FILE from inner tokens
+                if (!innerTokens.empty() && innerTokens.back().type == TokenType::END_OF_FILE)
+                    innerTokens.pop_back();
+                
+                fTokens.insert(fTokens.end(), innerTokens.begin(), innerTokens.end());
+                fTokens.push_back({TokenType::RBRACE_EXP, "}", line});
+            } else {
+                val += source[pos++];
+            }
+        }
+        if (!val.empty()) fTokens.push_back({TokenType::FSTRING_PART, val, line});
         if (pos < source.length()) pos++; // Skip "
-        return {TokenType::STRING, val, line}; // For now, treat as string
+        return fTokens;
     }
 
     Token readOperator() {
@@ -225,13 +267,38 @@ private:
         switch (current) {
             case '+':
                 if (source[pos] == '+') { pos++; return {TokenType::PLUS_PLUS, "++", line}; }
+                if (source[pos] == '=') { pos++; return {TokenType::PLUS_EQ, "+=", line}; }
                 return {TokenType::PLUS, "+", line};
             case '-':
                 if (source[pos] == '-') { pos++; return {TokenType::MINUS_MINUS, "--", line}; }
                 if (source[pos] == '>') { pos++; return {TokenType::ARROW, "->", line}; }
+                if (source[pos] == '=') { pos++; return {TokenType::MINUS_EQ, "-=", line}; }
                 return {TokenType::MINUS, "-", line};
-            case '*': return {TokenType::STAR, "*", line};
-            case '/': return {TokenType::SLASH, "/", line};
+            case '*': 
+                if (source[pos] == '=') { pos++; return {TokenType::STAR_EQ, "*=", line}; }
+                return {TokenType::STAR, "*", line};
+            case '/': 
+                if (source[pos] == '=') { pos++; return {TokenType::SLASH_EQ, "/=", line}; }
+                return {TokenType::SLASH, "/", line};
+            case '%':
+                if (source[pos] == '=') { pos++; return {TokenType::MOD_EQ, "%=", line}; }
+                return {TokenType::MOD, "%", line};
+            case '<':
+                if (source[pos] == '<') {
+                    pos++;
+                    if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::LSHIFT_EQ, "<<=", line}; }
+                    return {TokenType::LSHIFT, "<<", line};
+                }
+                if (source[pos] == '=') { pos++; return {TokenType::LE, "<=", line}; }
+                return {TokenType::LT, "<", line};
+            case '>':
+                if (source[pos] == '>') {
+                    pos++;
+                    if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::RSHIFT_EQ, ">>=", line}; }
+                    return {TokenType::RSHIFT, ">>", line};
+                }
+                if (source[pos] == '=') { pos++; return {TokenType::GE, ">=", line}; }
+                return {TokenType::GT, ">", line};
             case '&':
                 if (pos < source.length() && source[pos] == '&') { pos++; return {TokenType::LAND, "&&", line}; }
                 if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::AND_EQ, "&=", line}; }
@@ -257,10 +324,14 @@ private:
             case '}': return {TokenType::RBRACE, "}", line};
             case '[': return {TokenType::LBRACKET, "[", line};
             case ']': return {TokenType::RBRACKET, "]", line};
-            case ':': return {TokenType::COLON, ":", line};
+            case ':': 
+                if (pos < source.length() && source[pos] == '=') { pos++; return {TokenType::COLON_EQUALS, ":=", line}; }
+                return {TokenType::COLON, ":", line};
             case ';': return {TokenType::SEMICOLON, ";", line};
             case ',': return {TokenType::COMMA, ",", line};
             default: return {TokenType::UNKNOWN, std::string(1, current), line};
         }
     }
 };
+
+#endif // LEXER_HPP

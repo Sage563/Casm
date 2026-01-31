@@ -8,6 +8,8 @@ Soul Polyglot is a powerful, multi-paradigm programming language that bridges th
 ## 🚀 Features
 
 *   **Hybrid Syntax**: Write naturally using Python-style indentation, or use C-style includes and pointers.
+*   **Control Flow**: Full support for `if`/`else`, `while`, and Python-style `for item in collection` loops.
+*   **Exception Handling**: Robust `try`/`except` (or `catch`) and `raise`/`throw` mechanisms.
 *   **Advanced Data Structures**: First-class support for `set`, `dict` (Map), `deque`, `heap`, and `tuple`.
 *   **Module & Package System**: Python-style `import` compiles packages (e.g. `import random`) with **package constants** and functions; C-style `#include`; search paths: `packages/`, `site-packages/`, `lib/`, and `SOUL_PACKAGES` env.
 *   **Real Memory Management**: A proper Heap with a Free List Allocator for dynamic memory (`malloc`/`free`).
@@ -17,6 +19,8 @@ Soul Polyglot is a powerful, multi-paradigm programming language that bridges th
 ### Quick start
 
 1. **Build the compiler** (once): `make` (Linux/macOS) or `build.bat` / `.\build.ps1` (Windows).
+    > [!IMPORTANT]
+    > Always use the `-static` flag (included in scripts) to ensure the compiler is portable and doesn't crash due to missing `libstdc++` DLLs.
 2. **Compile** a program: `soulc.exe source.soul program.casm` (or `./soulc` on Linux/macOS).
 3. **Run** it: `node src/runtime/runtime.js program.casm`.
 
@@ -55,6 +59,9 @@ Before you can compile `.soul` files, you need to build the **soulc** compiler o
   - **Linux:** `g++` or `clang++` (e.g. `sudo apt install build-essential`)
 
 - **Node.js** (to run the VM): [nodejs.org](https://nodejs.org/)
+
+> [!NOTE]
+> **Portability Tip**: When compiling the compiler, always use the `-static` linker flag. This bundles the necessary C++ libraries into the executable, preventing "silent crashes" or "Access is denied" errors on systems that don't have the MinGW DLLs in their path.
 
 ### Build steps
 
@@ -186,6 +193,17 @@ if val > 5:
     print("Large")
 ```
 
+**Loops & Flow**
+```python
+for x in [1, 2, 3]:
+    print(x)
+
+try:
+    raise "Error!"
+except:
+    print("Caught error")
+```
+
 **C/C++ Style Integration**
 You can use pointers and manual memory management if needed.
 ```c
@@ -221,6 +239,10 @@ Every `.casm` file begins with the 4-byte Magic Header:
 Followed by a sequence of OpCodes and Operands.
 *   `0x01 [4 bytes]`: Push Integer
 *   `0x02 [String]`: Push String
+*   `0x0E [4 bytes]`: For Iterator (Jump target if done)
+*   `0x0F [4 bytes]`: Try Enter (Handler PC)
+*   `0x10`: Try Exit
+*   `0x11`: Raise Exception
 *   `0x90`: Create Set
 *   ...and so on.
 

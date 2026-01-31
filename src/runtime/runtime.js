@@ -45,7 +45,7 @@ class SoulVM {
     constructor(config = {}) {
         this.config = {
             maxMemory: config.maxMemory || 1024 * 1024,
-            useRamFS: config.useRamFS || false,
+            useRamFS: config.useRamFS !== undefined ? config.useRamFS : (typeof window !== 'undefined'),
             outputMode: config.outputMode || false, // Capture output instead of logging
             ...config
         };
@@ -200,8 +200,67 @@ class SoulVM {
                         const name = this.readString(); const target = this.variables.get(name);
                         if (typeof target === 'function') { const r = target.call(this); if (r !== undefined) this.stack.push(r); }
                         else if (target !== undefined) { this.callStack.push(this.pc); this.pc = target; }
+                        else { console.error("Undefined function: " + name); this.running = false; }
                     } break;
                 case 0x0D: this.pc = this.callStack.pop(); break;
+                case 0x0E: // FOR_ITER (target)
+                    {
+                        const target = (bc[this.pc++] << 24) | (bc[this.pc++] << 16) | (bc[this.pc++] << 8) | (bc[this.pc++]);
+                        const iter = this.stack[this.stack.length - 1]; // Peak iterator
+                        if (!iter || typeof iter.next !== 'function') {
+                            const val = this.stack.pop();
+                            const actualIter = (Array.isArray(val) || typeof val === 'string') ? val[Symbol.iterator]() : val;
+                            this.stack.push(actualIter);
+                        }
+                        const currentIter = this.stack[this.stack.length - 1];
+                        const next = currentIter.next();
+                        if (!next.done) {
+                            this.stack.push(next.value);
+                        } else {
+                            this.stack.pop(); // Remove iterator
+                            this.pc = target;
+                        }
+                    } break;
+                case 0x0F: // TRY_ENTER (handler_pc)
+                    {
+                        const handler = (bc[this.pc++] << 24) | (bc[this.pc++] << 16) | (bc[this.pc++] << 8) | (bc[this.pc++]);
+                        this.tryStack = this.tryStack || [];
+                        this.tryStack.push({ handler, stackLen: this.stack.length });
+                    } break;
+                case 0x10: // TRY_EXIT
+                    this.tryStack.pop();
+                    break;
+                case 0x11: // RAISE
+                    {
+                        const err = this.stack.pop();
+                        if (this.tryStack && this.tryStack.length) {
+                            const handlerInfo = this.tryStack.pop();
+                            this.stack.length = handlerInfo.stackLen;
+                            this.stack.push(err);
+                            this.pc = handlerInfo.handler;
+                        } else {
+                            console.error("Unhandled exception: " + err);
+                            this.running = false;
+                        }
+                    } break;
+
+                // Standardized Binary Ops for performance
+                case 0x12: { const b = this.stack.pop(); const a = this.stack.pop(); this.stack.push(b !== 0 ? a % b : 0); } break;
+                case 0x13: { const b = this.stack.pop(); this.stack.push(this.stack.pop() << b); } break;
+                case 0x14: { const b = this.stack.pop(); this.stack.push(this.stack.pop() >> b); } break;
+                case 0x15: this.stack.push(this.stack.pop() & this.stack.pop()); break;
+                case 0x16: this.stack.push(this.stack.pop() | this.stack.pop()); break;
+                case 0x17: this.stack.push(this.stack.pop() ^ this.stack.pop()); break;
+                case 0x18: this.stack.push(~this.stack.pop()); break;
+                case 0x19: this.stack.push(this.stack.pop() === this.stack.pop() ? 1 : 0); break;
+                case 0x1A: this.stack.push(this.stack.pop() !== this.stack.pop() ? 1 : 0); break;
+                case 0x1B: { const b = this.stack.pop(); this.stack.push(this.stack.pop() < b ? 1 : 0); } break;
+                case 0x1C: { const b = this.stack.pop(); this.stack.push(this.stack.pop() <= b ? 1 : 0); } break;
+                case 0x1D: { const b = this.stack.pop(); this.stack.push(this.stack.pop() > b ? 1 : 0); } break;
+                case 0x1E: { const b = this.stack.pop(); this.stack.push(this.stack.pop() >= b ? 1 : 0); } break;
+                case 0x1F: this.stack.push(this.stack.pop() && this.stack.pop() ? 1 : 0); break;
+                case 0x20: this.stack.push(this.stack.pop() || this.stack.pop() ? 1 : 0); break;
+                case 0x21: this.stack.push(this.stack.pop() ? 0 : 1); break;
 
                 // Advanced Ops delegating to handlers to keep switch manageable SIZE-wise for V8 optimization?
                 // Actually, V8 handles large switches well. Let's keep common ones here.
@@ -221,53 +280,60 @@ class SoulVM {
     }
 
     executeComplex(op) {
-        // ... (Copy of logic for 0x52-0xC2 from previous implementation) ...
-        // Re-implementing essential logic here to ensure it works.
         switch (op) {
-            case 0x52: {
+            case 0x52: { // READ_ADDR (sz, addr)
                 const sz = this.bytecode[this.pc++]; const a = this.stack.pop();
                 if (sz === 1) this.stack.push(this.memory[a]);
                 else if (sz === 8) this.stack.push(new DataView(this.memory.buffer).getFloat64(a, true));
                 else this.stack.push(new DataView(this.memory.buffer).getInt32(a, true));
             } break;
-            case 0x53: {
+            case 0x53: { // WRITE_ADDR (sz, val, addr)
                 const sz = this.bytecode[this.pc++]; const v = this.stack.pop(); const a = this.stack.pop();
                 if (sz === 1) this.memory[a] = v & 0xFF;
                 else if (sz === 8) new DataView(this.memory.buffer).setFloat64(a, v, true);
                 else new DataView(this.memory.buffer).setInt32(a, v, true);
             } break;
-            case 0x54: this.readString(); this.stack.push(this.malloc(16)); break;
-            // ... (Includes logic for 0x90-0xC2)
-            // Advanced Data Structures
-            case 0x90: this.stack.push(new Set()); break;
-            case 0x91: { const s = this.stack.pop(); const v = this.stack.pop(); s.add(v); this.stack.push(null); } break;
-            case 0x92: this.stack.push(new Map()); break;
-            case 0x93: { const m = this.stack.pop(); const v = this.stack.pop(); const k = this.stack.pop(); m.set(k, v); this.stack.push(null); } break;
-            case 0x94: { const m = this.stack.pop(); const k = this.stack.pop(); this.stack.push(m.get(k)); } break;
-            case 0x95: this.stack.push([]); break;
-            case 0x96: { const l = this.stack.pop(); const v = this.stack.pop(); l.push(v); this.stack.push(null); } break;
-            case 0x97: { const l = this.stack.pop(); this.stack.push(l.shift()); } break;
-            case 0x98: { const l = this.stack.pop(); this.stack.push(l.pop()); } break;
+            case 0x50: this.stack.push(this.malloc(this.stack.pop())); break; // MALLOC
+            case 0x51: this.freeByAddr(this.stack.pop()); break; // FREE
+            case 0x54: // ADDR_OF
+                {
+                    const n = this.readString();
+                    this.stack.push(n);
+                } break;
 
-            // Strings
+            // Advanced Data Structures (0x90+)
+            case 0x90: this.stack.push(new Set()); break;
+            case 0x91: { const val = this.stack.pop(); const s = this.stack.pop(); if (s instanceof Set) s.add(val); } break;
+            case 0x92: this.stack.push(new Map()); break;
+            case 0x93: { const val = this.stack.pop(); const key = this.stack.pop(); const m = this.stack.pop(); if (m instanceof Map) m.set(key, val); } break;
+            case 0x94: { const key = this.stack.pop(); const m = this.stack.pop(); this.stack.push(m instanceof Map ? m.get(key) : undefined); } break;
+            case 0x95: this.stack.push([]); break;
+            case 0x96: { const val = this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.push(val); } break;
+            case 0x97: { const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.shift() : undefined); } break;
+            case 0x98: { const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.pop() : undefined); } break;
+
+            // Strings (0xA0+)
             case 0xA0: this.stack.push(this.stack.pop().toLowerCase()); break;
             case 0xA1: this.stack.push(this.stack.pop().toUpperCase()); break;
             case 0xA2: { const s = this.stack.pop(); const sep = this.stack.pop(); this.stack.push(s.split(sep)); } break;
             case 0xA3: { const s = this.stack.pop(); const list = this.stack.pop(); if (Array.isArray(list)) this.stack.push(list.join(s)); else this.stack.push(s); } break;
-            case 0xA4: { const s = this.stack.pop(); const b = this.stack.pop(); const a = this.stack.pop(); this.stack.push(s.replace(a, b)); } break;
-            case 0xA5: { const s = this.stack.pop(); const sub = this.stack.pop(); this.stack.push(s.indexOf(sub)); } break;
-            case 0xA6: { const s = this.stack.pop(); const sub = this.stack.pop(); this.stack.push(s.startsWith(sub)); } break;
-            case 0xA7: this.stack.push(this.stack.pop().trim()); break;
 
-            // Math
+            // Math (0xB0+)
             case 0xB0: this.stack.push(Math.sqrt(this.stack.pop())); break;
             case 0xB1: this.stack.push(Math.abs(this.stack.pop())); break;
             case 0xB2: this.stack.push(Math.PI); break;
             case 0xB3: this.stack.push(Math.E); break;
 
-            // System
-            case 0xC0: if (this.isNode) process.exit(this.stack.pop()); break;
-            case 0xC1: if (this.isNode) { try { require('child_process').execSync(this.stack.pop(), { stdio: 'inherit' }); this.stack.push(0); } catch (e) { this.stack.push(1); } } else this.stack.push(-1); break;
+            // System (0xC0+)
+            case 0xC0: if (this.isNode) process.exit(this.stack.pop() || 0); else this.running = false; break;
+            case 0xC1: // os.system
+                {
+                    const cmd = this.getString(this.stack.pop());
+                    if (this.isNode) {
+                        try { require('child_process').execSync(cmd, { stdio: 'inherit' }); this.stack.push(0); }
+                        catch (e) { this.stack.push(1); }
+                    } else { this.print(`[OS SYSTEM] ${cmd}\n`); this.stack.push(0); }
+                } break;
             case 0xC2: { const s = this.stack.pop(); const end = Date.now() + (s * 1000); while (Date.now() < end); this.stack.push(null); } break;
 
             default: this.running = false;
@@ -461,6 +527,32 @@ class SoulVM {
             case 0xFE: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const lists = a; const len = Math.min(...lists.map(l => Array.isArray(l) ? l.length : 0)); const out = []; for (let i = 0; i < len; i++) out.push(lists.map(l => l[i])); this.stack.push(out); } break;
             case 0xFF: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const it = Array.isArray(a[0]) ? a[0] : []; const start = n >= 2 ? (a[1] | 0) : 0; this.stack.push(it.map((v, i) => [start + i, v])); } break;
             case 0xCA: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const lo = (n >= 2 ? a[0] : 0) | 0; const hi = (n >= 2 ? a[1] : (a[0] | 0)) | 0; const range = hi - lo; this.stack.push(range <= 0 ? lo : lo + Math.floor(Math.random() * range)); } break;
+
+            // --- Missing Math Syscalls ---
+            case 0xB0: this.stack.push(Math.sqrt(this.stack.pop())); break; // math.sqrt
+            case 0xB1: this.stack.push(Math.abs(this.stack.pop())); break;  // abs
+            case 0xB2: this.stack.push(Math.PI); break;                   // math.pi
+            case 0xB3: this.stack.push(Math.E); break;                    // math.e
+
+            // --- Missing System Syscalls ---
+            case 0xC0: if (this.isNode) process.exit(this.stack.pop() || 0); else this.running = false; break; // sys.exit
+            case 0xC1: // os.system
+                {
+                    const cmd = this.getString(this.stack.pop());
+                    if (this.isNode) {
+                        try { require('child_process').execSync(cmd, { stdio: 'inherit' }); this.stack.push(0); }
+                        catch (e) { this.stack.push(1); }
+                    } else { this.print(`[OS SYSTEM] ${cmd}\n`); this.stack.push(0); }
+                } break;
+            case 0xC2: // time.sleep
+                { const ms = (this.stack.pop() * 1000) | 0; const start = Date.now(); while (Date.now() - start < ms); } break;
+
+            // --- Collections: set, dict, list constructors ---
+            case 0x90: this.stack.push(new Set()); break;
+            case 0x91: { const val = this.stack.pop(); const s = this.stack.pop(); if (s instanceof Set) s.add(val); } break;
+            case 0x92: this.stack.push(new Map()); break;
+            case 0x94: { const key = this.stack.pop(); const d = this.stack.pop(); this.stack.push(d instanceof Map ? d.get(key) : undefined); } break;
+            case 0x95: this.stack.push([]); break;
         }
     }
 }

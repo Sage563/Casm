@@ -10,11 +10,11 @@ OUT = soulc
 all: $(OUT)
 
 $(OUT): $(SRC)/main.cpp $(SRC)/lexer.hpp
-	$(CXX) $(CXXFLAGS) -o $(OUT) $(SRC)/main.cpp
+	$(CXX) $(CXXFLAGS) -static -o $(OUT) $(SRC)/main.cpp
 
 # Build into src/compiler/ (e.g. for local testing)
 compiler: $(SRC)/main.cpp $(SRC)/lexer.hpp
-	$(CXX) $(CXXFLAGS) -o $(SRC)/soulc $(SRC)/main.cpp
+	$(CXX) $(CXXFLAGS) -static -o $(SRC)/soulc $(SRC)/main.cpp
 
 clean:
 	rm -f $(OUT) $(SRC)/soulc

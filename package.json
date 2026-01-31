@@ -3,12 +3,18 @@
   "version": "1.0.0",
   "description": "Multi-paradigm language compiling to CASM bytecode; runs on SoulVM (Node.js or browser).",
   "scripts": {
-    "build": "node -e \"const fs=require('fs');const {execSync}=require('child_process');try{execSync('g++ -std=c++17 -O2 -o soulc src/compiler/main.cpp',{stdio:'inherit'});console.log('Built soulc');}catch(e){console.log('Build failed. Need g++ (MinGW on Windows). Try: make, or build.bat / build.ps1');process.exit(1);}\"",
+    "build": "node -e \"const fs=require('fs');const {execSync}=require('child_process');try{execSync('g++ -std=c++17 -O2 -static -o soulc src/compiler/main.cpp',{stdio:'inherit'});console.log('Built soulc');}catch(e){console.log('Build failed. Need g++ (MinGW on Windows). Try: make, or build.bat / build.ps1');process.exit(1);}\"",
     "build:win": "build.bat",
     "compile": "node -e \"const a=process.argv.slice(2);if(a.length<2){console.log('Usage: npm run compile -- input.soul output.casm');process.exit(1);}require('child_process').execSync(`./soulc ${a[0]} ${a[1]}`.replace(/\\.\\/soulc/,'soulc.exe'),{stdio:'inherit'});\"",
     "run": "node src/runtime/runtime.js",
     "run:ramfs": "node src/runtime/runtime.js --ramfs"
   },
-  "keywords": ["soul", "polyglot", "casm", "vm", "compiler"],
+  "keywords": [
+    "soul",
+    "polyglot",
+    "casm",
+    "vm",
+    "compiler"
+  ],
   "license": "SEE LICENSE IN LICENSE"
 }

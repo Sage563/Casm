@@ -6,7 +6,7 @@ $Out = "soulc.exe"
 
 if (Get-Command g++ -ErrorAction SilentlyContinue) {
     Write-Host "Building with g++..."
-    & g++ -std=c++17 -O2 -o $Out $Src
+    & g++ -std=c++17 -O2 -static -o $Out $Src
     if ($LASTEXITCODE -eq 0) { Write-Host "Built: $Out" }
     exit $LASTEXITCODE
 }

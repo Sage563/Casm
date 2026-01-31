@@ -1,26 +1,24 @@
-
-// ============================================================================
-// THE ULTIMATE THREE-WAY SYNTAX MAP (Part 2: Advanced & Extended)
-// ============================================================================
-// ... (Docs omitted for brevity, keeping existing structure) ...
-
 #include <iostream>
 #include <vector>
 #include <string>
 #include <fstream>
-#include <map>
 #include <set>
 #include <algorithm>
 #include <sstream>
+#include <cstdio>
 #include "lexer.hpp"
+
 // Forward declaration
-std::string preprocess(const std::string& source, const std::string& currentDir);
+std::string preprocess(const std::string& source, const std::string& currentDir = "", const std::vector<std::string>& includePaths = {});
 
 enum OpCode {
     HALT = 0x00, PUSH_INT = 0x01, PUSH_STR = 0x02, SYSCALL = 0x03, 
     STORE = 0x04, LOAD = 0x05, ADD = 0x06, SUB = 0x07, MUL = 0x08, DIV = 0x09,
     JMP = 0x0A, JZ = 0x0B, CALL = 0x0C, RET = 0x0D,
     FOR_ITER = 0x0E, TRY_ENTER = 0x0F, TRY_EXIT = 0x10, RAISE = 0x11,
+    MOD = 0x12, LSHIFT = 0x13, RSHIFT = 0x14, BIT_AND = 0x15, BIT_OR = 0x16, BIT_XOR = 0x17, BIT_NOT = 0x18,
+    EQ = 0x19, NE = 0x1A, LT = 0x1B, LE = 0x1C, GT = 0x1D, GE = 0x1E,
+    LOGIC_AND = 0x1F, LOGIC_OR = 0x20, LOGIC_NOT = 0x21,
     MALLOC = 0x50, FREE = 0x51, READ_ADDR = 0x52, WRITE_ADDR = 0x53, ADDR_OF = 0x54
 };
 
@@ -29,7 +27,7 @@ struct Type { std::string name; int size; bool isPointer; std::vector<Field> fie
 
 class Compiler {
 public:
-    Compiler(const std::vector<Token>& tokens) : tokens(tokens), pos(0) {
+    Compiler(const std::vector<Token>& tokens, bool verbose = false) : tokens(tokens), pos(0), verbose(verbose) {
         types["int"] = {"int", 4, false};
         types["char"] = {"char", 1, false};
         types["void"] = {"void", 0, false};
@@ -66,11 +64,15 @@ public:
     }
 
     std::vector<uint8_t> compile() {
+        if (verbose) std::cout << "Starting compilation..." << std::endl;
         while (pos < tokens.size() && tokens[pos].type != TokenType::END_OF_FILE) {
             parseTopLevel();
         }
         std::string entry = symbolTable.count("main") ? "main" : (symbolTable.count("Main") ? "Main" : "");
-        if (entry != "") { emitOp(CALL); emitString(entry); }
+        if (entry != "") { 
+            if (verbose) std::cout << "Entry point found: " << entry << std::endl;
+            emitOp(CALL); emitString(entry); 
+        }
         emitOp(HALT);
         return bytecode;
     }
@@ -81,19 +83,17 @@ private:
     std::vector<uint8_t> bytecode;
     std::map<std::string, int> symbolTable;
     std::map<std::string, Type> types;
-    std::string modulePrefix;  // e.g. "random." for package symbols
+    std::string modulePrefix; 
+    bool verbose;
 
     bool isDeclModifier(const std::string& v) {
-        static const std::set<std::string> mods = {
-            "static", "extern", "public", "private", "async", "readonly", "sealed", "typedef",
-            "alignas", "alignof", "asm", "auto", "const", "consteval", "constexpr", "constinit",
-            "explicit", "export", "inline", "mutable", "register", "thread_local", "virtual", "volatile",
-            "template", "typename", "concept", "requires", "noexcept", "friend",
-            "restrict",
-            "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary",
-            "_Noreturn", "_Static_assert", "_Thread_local", "typeof", "typeof_unqual"
-        };
-        return mods.count(v);
+        return (v == "static" || v == "extern" || v == "public" || v == "private" || v == "async" || v == "readonly" || v == "sealed" || v == "typedef" ||
+                v == "alignas" || v == "alignof" || v == "asm" || v == "auto" || v == "const" || v == "consteval" || v == "constexpr" || v == "constinit" ||
+                v == "explicit" || v == "export" || v == "inline" || v == "mutable" || v == "register" || v == "thread_local" || v == "virtual" || v == "volatile" ||
+                v == "template" || v == "typename" || v == "concept" || v == "requires" || v == "noexcept" || v == "friend" ||
+                v == "restrict" ||
+                v == "_Alignas" || v == "_Alignof" || v == "_Atomic" || v == "_Bool" || v == "_Complex" || v == "_Generic" || v == "_Imaginary" ||
+                v == "_Noreturn" || v == "_Static_assert" || v == "_Thread_local" || v == "typeof" || v == "typeof_unqual");
     }
 
     void skipAlignasAlignof() {
@@ -148,6 +148,9 @@ private:
 
     void parseTopLevel() {
         if (pos >= tokens.size()) return;
+        if (verbose && tokens[pos].type != TokenType::INDENT && tokens[pos].type != TokenType::DEDENT) 
+            std::cout << "Parsing: " << tokens[pos].value << " at line " << tokens[pos].line << std::endl;
+        
         if (tokens[pos].value == "__module__") {
             pos++;
             if (pos < tokens.size()) { modulePrefix = tokens[pos++].value + "."; }
@@ -190,10 +193,13 @@ private:
 
     std::string parseTypeName() {
         std::string typeName;
-        static const std::set<std::string> typeSpec = {"unsigned", "signed", "long", "short", "char", "char8_t", "char16_t", "char32_t", "wchar_t", "int", "float", "double", "void", "bool", "_Bool"};
-        while (pos < tokens.size() && typeSpec.count(tokens[pos].value)) {
+        while (pos < tokens.size()) {
+            const std::string& v = tokens[pos].value;
+            bool isSpec = (v == "unsigned" || v == "signed" || v == "long" || v == "short" || v == "char" || v == "char8_t" || v == "char16_t" || v == "char32_t" || v == "wchar_t" || v == "int" || v == "float" || v == "double" || v == "void" || v == "bool" || v == "_Bool");
+            if (!isSpec) break;
             if (!typeName.empty()) typeName += " ";
-            typeName += tokens[pos++].value;
+            typeName += v;
+            pos++;
         }
         if (typeName.empty() && pos < tokens.size() && (tokens[pos].type == TokenType::KEYWORD || tokens[pos].type == TokenType::IDENTIFIER)) {
             typeName = tokens[pos++].value;
@@ -276,6 +282,44 @@ private:
     void parseStatement() {
         if (pos >= tokens.size()) return;
         Token t = tokens[pos++];
+        if (t.value == "for") {
+            if (tokens[pos].type == TokenType::LPAREN) pos++;
+            std::string var = tokens[pos++].value;
+            if (tokens[pos].value == "in") pos++;
+            parseExpression();
+            if (tokens[pos].type == TokenType::RPAREN) pos++;
+
+            int loopStart = bytecode.size();
+            emitOp(FOR_ITER); 
+            int patchFor = bytecode.size(); emitInt(0);
+            
+            emitOp(STORE); emitString(mangle(var));
+            parseBlock();
+            emitJump(JMP, loopStart);
+            patchInt(patchFor, bytecode.size());
+            return;
+        }
+        if (t.value == "try") {
+            emitOp(TRY_ENTER); int patchTry = bytecode.size(); emitInt(0);
+            parseBlock();
+            emitOp(TRY_EXIT);
+            int skipCatch = bytecode.size(); emitJump(JMP, 0);
+            
+            patchInt(patchTry, bytecode.size());
+            if (pos < tokens.size() && (tokens[pos].value == "except" || tokens[pos].value == "catch")) {
+                pos++;
+                if (pos < tokens.size() && tokens[pos].type == TokenType::LPAREN) {
+                    pos++; while(pos < tokens.size() && tokens[pos].type != TokenType::RPAREN) pos++; pos++;
+                }
+                if (pos < tokens.size() && tokens[pos].type == TokenType::COLON) pos++;
+                parseBlock();
+            }
+            patchInt(skipCatch + 1, bytecode.size());
+            return;
+        }
+        if (t.value == "raise" || t.value == "throw") {
+            parseExpression(); emitOp(RAISE); if (pos < tokens.size() && tokens[pos].type == TokenType::SEMICOLON) pos++; return;
+        }
         if (t.value == "if") {
             if (tokens[pos].type == TokenType::LPAREN) pos++;
             parseExpression(); if (tokens[pos].type == TokenType::RPAREN) pos++;
@@ -343,13 +387,88 @@ private:
         if (pos < tokens.size() && tokens[pos].type == TokenType::SEMICOLON) pos++;
     }
 
-    void parseExpression() {
-        if (pos >= tokens.size()) return;
+    std::string parseExpression(int minPrecedence = 0) {
+        std::string leftName = parsePrimary();
+        while (pos < tokens.size()) {
+            Token op = tokens[pos];
+            int prec = getPrecedence(op);
+            if (prec < minPrecedence || prec == -1) break;
+            pos++;
+            if (op.type == TokenType::COLON_EQUALS) {
+                // Walrus: name := expr
+                if (!leftName.empty()) {
+                    parseExpression(prec + 1);
+                    emitOp(STORE); emitString(mangle(leftName));
+                    emitOp(LOAD); emitString(mangle(leftName));
+                    leftName = ""; 
+                }
+                continue; 
+            }
+            parseExpression(prec + 1);
+            emitBinaryOp(op.type);
+            leftName = ""; 
+        }
+        return ""; 
+    }
+
+    int getPrecedence(Token t) {
+        switch (t.type) {
+            case TokenType::LOR: return 1;
+            case TokenType::LAND: return 2;
+            case TokenType::PIPE: return 3;
+            case TokenType::CARET: return 4;
+            case TokenType::AMPERSAND: return 5;
+            case TokenType::EQUALS_EQUALS: case TokenType::NOT_EQ: return 6;
+            case TokenType::LT: case TokenType::LE: case TokenType::GT: case TokenType::GE: return 7;
+            case TokenType::LSHIFT: case TokenType::RSHIFT: return 8;
+            case TokenType::PLUS: case TokenType::MINUS: return 9;
+            case TokenType::STAR: case TokenType::SLASH: case TokenType::MOD: return 10;
+            case TokenType::COLON_EQUALS: return 0;
+            default: return -1;
+        }
+    }
+
+    void emitBinaryOp(TokenType type) {
+        switch (type) {
+            case TokenType::PLUS: emitOp(ADD); break;
+            case TokenType::MINUS: emitOp(SUB); break;
+            case TokenType::STAR: emitOp(MUL); break;
+            case TokenType::SLASH: emitOp(DIV); break;
+            case TokenType::EQUALS_EQUALS: emitOp(EQ); break;
+            case TokenType::NOT_EQ: emitOp(NE); break;
+            case TokenType::LT: emitOp(LT); break;
+            case TokenType::LE: emitOp(LE); break;
+            case TokenType::GT: emitOp(GT); break;
+            case TokenType::GE: emitOp(GE); break;
+            case TokenType::LAND: emitOp(LOGIC_AND); break;
+            case TokenType::LOR: emitOp(LOGIC_OR); break;
+            case TokenType::AMPERSAND: emitOp(BIT_AND); break;
+            case TokenType::PIPE: emitOp(BIT_OR); break;
+            case TokenType::CARET: emitOp(BIT_XOR); break;
+            case TokenType::MOD: emitOp(MOD); break;
+            case TokenType::LSHIFT: emitOp(LSHIFT); break;
+            case TokenType::RSHIFT: emitOp(RSHIFT); break;
+            default: break;
+        }
+    }
+
+    std::string parsePrimary() {
+        if (pos >= tokens.size()) return "";
         Token t = tokens[pos++];
+        if (t.type == TokenType::FSTRING_PART) {
+            emitOp(PUSH_STR); emitString(t.value);
+            return "";
+        }
+        if (t.type == TokenType::LBRACE_EXP) {
+            parseExpression();
+            if (pos < tokens.size() && tokens[pos].type == TokenType::RBRACE_EXP) pos++;
+            emitOp(SYSCALL); bytecode.push_back(0xEF); // str() conversion
+            return "";
+        }
         // C++ nullptr
         if (t.type == TokenType::KEYWORD && t.value == "nullptr") {
             emitPushInt(0);
-            return;
+            return "";
         }
         // C++ sizeof(type) or sizeof expr
         if (t.type == TokenType::KEYWORD && t.value == "sizeof") {
@@ -362,24 +481,27 @@ private:
                 std::string saveType = parseTypeName();
                 emitPushInt(getTypeSize(saveType));
             }
-            return;
+            return "";
         }
         // Unary * (pointer dereference)
         if (t.type == TokenType::STAR) {
             parseExpression();
             emitOp(READ_ADDR);
             bytecode.push_back(4);
-            return;
+            return "";
         }
-        // Unary & (address-of) — pushes variable ref for later use with *ptr
+        // Unary & (address-of)
         if (t.type == TokenType::AMPERSAND) {
             parseExpression();
-            return;
+            return "";
         }
-        if (t.type == TokenType::KEYWORD && t.value == "true") { emitPushInt(1); return; }
-        if (t.type == TokenType::KEYWORD && t.value == "false") { emitPushInt(0); return; }
-        if (t.type == TokenType::INTEGER) emitPushInt(std::stoi(t.value));
-        else if (t.type == TokenType::STRING) { emitOp(PUSH_STR); emitString(t.value); }
+        if (t.type == TokenType::KEYWORD && t.value == "true") { emitPushInt(1); return ""; }
+        if (t.type == TokenType::KEYWORD && t.value == "false") { emitPushInt(0); return ""; }
+        if (t.type == TokenType::INTEGER) { 
+            try { emitPushInt(std::stoi(t.value)); } catch(...) { emitPushInt(0); }
+            return "";
+        }
+        else if (t.type == TokenType::STRING) { emitOp(PUSH_STR); emitString(t.value); return ""; }
         else if (t.type == TokenType::IDENTIFIER) {
             std::string name = t.value;
             while (pos < tokens.size() && (tokens[pos].type == TokenType::DOT || tokens[pos].type == TokenType::ARROW)) {
@@ -390,14 +512,12 @@ private:
                 while(pos < tokens.size() && tokens[pos].type != TokenType::RPAREN) { parseExpression(); count++; if(tokens[pos].type == TokenType::COMMA) pos++; }
                 pos++;
                 
-                // --- SPECIAL FUNCTIONS & SYSCALLS ---
                 if (name == "fopen") { emitPushInt(count); emitSyscall(0x70); }
                 else if (name == "fprintf") { emitPushInt(count); emitSyscall(0x71); }
                 else if (name == "fclose") { emitPushInt(count); emitSyscall(0x72); }
                 else if (name == "printf" || name == "print") { emitPushInt(count); emitSyscall(0x60); }
                 else if (name == "ctime") { emitPushInt(count); emitSyscall(0x81); }
                 else if (name == "Console.WriteLine") { emitPushInt(count); emitSyscall(0x60); emitOp(PUSH_STR); emitString("\\n"); emitPushInt(1); emitSyscall(0x60); }
-                // Python builtins
                 else if (name == "len") { emitPushInt(count); emitSyscall(0x63); }
                 else if (name == "range") { emitPushInt(count); emitSyscall(0xE8); }
                 else if (name == "min") { emitPushInt(count); emitSyscall(0xE9); }
@@ -425,16 +545,13 @@ private:
                 else if (name == "enumerate") { emitPushInt(count); emitSyscall(0xFF); }
                 else if (name == "reversed") { emitPushInt(count); emitSyscall(0xC9); }
                 else if (name == "open") { emitPushInt(count); emitSyscall(0x70); }
-                // C string/stdio
                 else if (name == "strlen") { emitPushInt(count); emitSyscall(0x63); }
                 else if (name == "puts") { emitPushInt(count); emitSyscall(0x61); }
                 else if (name == "__random") { emitPushInt(count); emitSyscall(0xCA); }
-                // C memory
                 else if (name == "malloc") { emitPushInt(count); emitSyscall(0xD0); }
                 else if (name == "calloc") { emitPushInt(count); emitSyscall(0xD1); }
                 else if (name == "realloc") { emitPushInt(count); emitSyscall(0xD2); }
                 else if (name == "free") { emitPushInt(count); emitSyscall(0xD3); }
-                // C string conversions
                 else if (name == "atof") { emitPushInt(count); emitSyscall(0xD4); }
                 else if (name == "atoi") { emitPushInt(count); emitSyscall(0xD5); }
                 else if (name == "atol") { emitPushInt(count); emitSyscall(0xD6); }
@@ -442,7 +559,6 @@ private:
                 else if (name == "strtod" || name == "strtof" || name == "strtol" || name == "strtold" || name == "strtoll" || name == "strtoul" || name == "strtoull") {
                     emitPushInt(count); emitSyscall(name == "strtod" ? 0xD8 : name == "strtof" ? 0xD9 : name == "strtol" ? 0xDA : name == "strtold" ? 0xDB : name == "strtoll" ? 0xDC : name == "strtoul" ? 0xDD : 0xDE);
                 }
-                // C process control
                 else if (name == "abort") { emitPushInt(count); emitSyscall(0xE0); }
                 else if (name == "exit" || name == "_Exit") { emitPushInt(count); emitSyscall(name == "_Exit" ? 0xE1 : 0xC0); }
                 else if (name == "atexit") { emitPushInt(count); emitSyscall(0xE2); }
@@ -450,89 +566,38 @@ private:
                 else if (name == "quick_exit") { emitPushInt(count); emitSyscall(0xE4); }
                 else if (name == "getenv") { emitPushInt(count); emitSyscall(0xE5); }
                 else if (name == "system") { emitPushInt(count); emitSyscall(0xC1); }
-                // C search/sort
                 else if (name == "bsearch") { emitPushInt(count); emitSyscall(0xE6); }
                 else if (name == "qsort") { emitPushInt(count); emitSyscall(0xE7); }
-                // Advanced Data Structures
                 else if (name == "set") { emitSyscall(0x90); }
                 else if (name == "dict") { emitSyscall(0x92); }
                 else if (name == "deque" || name == "list") { emitSyscall(0x95); }
-                // C++ list methods (constructors: list(), ~list() as list destructor - no separate code)
-                else if (hasSuffix(name, ".assign")) { callMethod(name, 7, 0xA8, count); }
-                else if (hasSuffix(name, ".front")) { callMethod(name, 6, 0xA9, count); }
-                else if (hasSuffix(name, ".back")) { callMethod(name, 5, 0xAA, count); }
-                else if (hasSuffix(name, ".cbegin")) { callMethod(name, 7, 0xAB, count); }
-                else if (hasSuffix(name, ".begin")) { callMethod(name, 6, 0xAB, count); }
-                else if (hasSuffix(name, ".cend")) { callMethod(name, 5, 0xAC, count); }
-                else if (hasSuffix(name, ".end")) { callMethod(name, 4, 0xAC, count); }
-                else if (hasSuffix(name, ".crbegin")) { callMethod(name, 8, 0xAD, count); }
-                else if (hasSuffix(name, ".rbegin")) { callMethod(name, 7, 0xAD, count); }
-                else if (hasSuffix(name, ".crend")) { callMethod(name, 6, 0xAE, count); }
-                else if (hasSuffix(name, ".rend")) { callMethod(name, 5, 0xAE, count); }
-                else if (hasSuffix(name, ".size")) { callMethod(name, 5, 0x63, count); }
-                else if (hasSuffix(name, ".empty")) { callMethod(name, 6, 0xAF, count); }
-                else if (hasSuffix(name, ".max_size")) { callMethod(name, 9, 0xB4, count); }
-                else if (hasSuffix(name, ".clear")) { callMethod(name, 6, 0xB5, count); }
-                else if (hasSuffix(name, ".insert")) { callMethod(name, 7, 0xB6, count); }
-                else if (hasSuffix(name, ".emplace")) { callMethod(name, 8, 0xB6, count); }
-                else if (hasSuffix(name, ".erase")) { callMethod(name, 6, 0xB7, count); }
-                else if (hasSuffix(name, ".emplace_front")) { callMethod(name, 14, 0xB8, count); }
-                else if (hasSuffix(name, ".push_front")) { callMethod(name, 11, 0xB8, count); }
-                else if (hasSuffix(name, ".prepend_range")) { callMethod(name, 14, 0xB9, count); }
-                else if (hasSuffix(name, ".pop_front")) { callMethod(name, 10, 0x97, count); }
-                else if (hasSuffix(name, ".emplace_back")) { callMethod(name, 13, 0x96, count); }
-                else if (hasSuffix(name, ".push_back")) { callMethod(name, 10, 0x96, count); }
-                else if (hasSuffix(name, ".append_range")) { callMethod(name, 13, 0xBA, count); }
-                else if (hasSuffix(name, ".pop_back")) { callMethod(name, 9, 0x98, count); }
-                else if (hasSuffix(name, ".resize")) { callMethod(name, 7, 0xBB, count); }
-                else if (hasSuffix(name, ".swap")) { callMethod(name, 5, 0xBC, count); }
-                else if (hasSuffix(name, ".sort")) { callMethod(name, 5, 0xBD, count); }
-                else if (hasSuffix(name, ".unique")) { callMethod(name, 7, 0xBE, count); }
-                else if (hasSuffix(name, ".reverse")) { callMethod(name, 8, 0xBF, count); }
-                else if (hasSuffix(name, ".merge")) { callMethod(name, 6, 0xC3, count); }
-                else if (hasSuffix(name, ".splice")) { callMethod(name, 7, 0xC4, count); }
-                else if (hasSuffix(name, ".remove")) { callMethod(name, 7, 0xC5, count); }
-                else if (hasSuffix(name, ".remove_if")) { callMethod(name, 10, 0xC6, count); }
-                else if (hasSuffix(name, ".equals")) { callMethod(name, 8, 0xC7, count); }
-                else if (hasSuffix(name, ".compare")) { callMethod(name, 9, 0xC8, count); }
-                // String Manipulation
-                else if (hasSuffix(name, ".lower")) { callMethod(name, 6, 0xA0, count); }
-                else if (hasSuffix(name, ".upper")) { callMethod(name, 6, 0xA1, count); }
-                else if (hasSuffix(name, ".split")) { callMethod(name, 6, 0xA2, count); }
-                else if (hasSuffix(name, ".join")) { callMethod(name, 5, 0xA3, count); }
-                else if (hasSuffix(name, ".replace")) { callMethod(name, 8, 0xA4, count); }
-                else if (hasSuffix(name, ".find")) { callMethod(name, 5, 0xA5, count); }
-                else if (hasSuffix(name, ".cardinality")) { callMethod(name, 12, 0xA5, count); }
-                else if (hasSuffix(name, ".startswith")) { callMethod(name, 11, 0xA6, count); }
-                else if (hasSuffix(name, ".strip")) { callMethod(name, 6, 0xA7, count); }
-                // Collections Methods
-                else if (hasSuffix(name, ".add")) { callMethod(name, 4, 0x91, count); }
-                else if (hasSuffix(name, ".push")) { callMethod(name, 5, 0x96, count); }
+                else if (hasSuffix(name, ".append")) { callMethod(name, 7, 0x96, count); }
                 else if (hasSuffix(name, ".pop")) { callMethod(name, 4, 0x98, count); }
-                else if (hasSuffix(name, ".get")) { callMethod(name, 4, 0x94, count); }
-                // Math
+                else if (hasSuffix(name, ".size")) { callMethod(name, 5, 0x63, count); }
                 else if (name == "math.sqrt") emitSyscall(0xB0);
                 else if (name == "abs") emitSyscall(0xB1);
-                // System
                 else if (name == "sys.exit") emitSyscall(0xC0);
                 else if (name == "os.system") emitSyscall(0xC1);
                 else if (name == "time.sleep") emitSyscall(0xC2);
-
                 else { emitOp(CALL); emitString(name); }
             } else if (pos < tokens.size() && tokens[pos].type == TokenType::EQUALS) {
                 pos++; parseExpression(); emitOp(STORE); emitString(mangle(name));
             } else { 
-                // Constants / variable load (use module prefix for simple names)
                 if (name == "math.pi") { emitSyscall(0xB2); }
                 else if (name == "math.e") { emitSyscall(0xB3); }
                 else { std::string loadName = (name.find('.') != std::string::npos) ? name : mangle(name); emitOp(LOAD); emitString(loadName); }
             }
-        } else if (t.type == TokenType::AMPERSAND) { parseExpression(); }
+            return name;
+        } else if (t.type == TokenType::LPAREN) {
+            parseExpression();
+            if (pos < tokens.size() && tokens[pos].type == TokenType::RPAREN) pos++;
+            return "";
+        }
+        return "";
     }
 
     bool hasSuffix(const std::string &str, const std::string &suffix) {
-        return str.size() >= suffix.size() &&
-               str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+        return str.size() >= suffix.size() && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
 
     void callMethod(std::string fullName, int suffixLen, uint8_t syscall, int count) {
@@ -560,119 +625,115 @@ private:
     }
 };
 
-// Header guards to preventing multiple inclusion
-std::set<std::string> includedFiles;
+std::vector<std::string> globalIncludedFiles;
 
-std::string preprocess(const std::string& source, const std::string& currentDir = "") {
+std::string preprocess(const std::string& source, const std::string& currentDir, const std::vector<std::string>& includePaths) {
     std::string result;
     std::string line;
     std::istringstream stream(source);
     while (std::getline(stream, line)) {
         size_t importPos = line.find("import ");
         size_t includePos = line.find("#include");
-        
         if (importPos == 0 || includePos == 0) {
             std::string mod;
             bool isImport = (importPos == 0);
-            if (importPos == 0) {
+            if (isImport) {
                 mod = line.substr(7);
                 size_t asPos = mod.find(" as ");
                 size_t fromPos = mod.find(" from ");
                 if (asPos != std::string::npos) mod = mod.substr(0, asPos);
-                else if (fromPos != std::string::npos) mod = mod.substr(fromPos + 6); // " from " -> take right part
-                else if (mod.find(" import ") != std::string::npos) { size_t i = mod.find(" import "); mod = mod.substr(0, i); }
+                else if (fromPos != std::string::npos) mod = mod.substr(fromPos + 6);
             } else {
                 size_t start = line.find_first_of("\"<");
                 size_t end = line.find_last_of("\">");
-                if (start != std::string::npos && end != std::string::npos && end > start) {
-                    mod = line.substr(start + 1, end - start - 1);
-                } else continue;
+                if (start != std::string::npos && end != std::string::npos && end > start) mod = line.substr(start + 1, end - start - 1);
+                else continue;
             }
-
             size_t first = mod.find_first_not_of(" \t");
             if (first != std::string::npos) mod.erase(0, first);
             size_t last = mod.find_last_not_of(" \t");
             if (last != std::string::npos) mod.erase(last + 1);
-            if (mod.find(" import ") != std::string::npos) { size_t i = mod.find(" import "); mod = mod.substr(0, i); mod.erase(0, mod.find_first_not_of(" \t")); }
             mod.erase(remove_if(mod.begin(), mod.end(), isspace), mod.end());
             
-            // Built-ins (no file): skip including
-            if (mod == "math" || mod == "math.h" || mod == "cmath") continue; 
-            if (mod == "sys" || mod == "stdlib.h" || mod == "cstdlib") continue; 
-            if (mod == "time" || mod == "time.h" || mod == "ctime") continue;
-            if (mod == "iostream" || mod == "stdio.h") continue; 
-            if (mod == "vector" || mod == "string" || mod == "map") continue;
+            if (mod == "math" || mod == "math.h" || mod == "cmath" || mod == "sys" || mod == "stdlib.h" || mod == "cstdlib" || mod == "time" || mod == "time.h" || mod == "ctime" || mod == "iostream" || mod == "stdio.h" || mod == "vector" || mod == "string" || mod == "map") continue;
 
-            // Package / module search paths (pip-style: packages/, site-packages/, lib/)
-            std::vector<std::string> searchPaths = { currentDir, ".", "packages", "site-packages", "lib", "src", "include" };
-            const char* envPath = getenv("C_INCLUDE_PATH");
-            if (envPath) searchPaths.push_back(envPath);
-            const char* pkgPath = getenv("SOUL_PACKAGES");
-            if (pkgPath) searchPaths.push_back(pkgPath);
-
-            std::vector<std::string> attempts;
-            if (mod.find('.') == std::string::npos) {
-                attempts.push_back(mod + "/__init__.soul");
-                attempts.push_back(mod + "/__init__.py");
-                attempts.push_back(mod + ".soul");
-                attempts.push_back(mod + ".py");
-                attempts.push_back(mod + ".h");
-                attempts.push_back(mod + ".c"); 
-            } else {
-                attempts.push_back(mod);
-            }
+            std::vector<std::string> searchPaths = { currentDir, "." };
+            searchPaths.insert(searchPaths.end(), includePaths.begin(), includePaths.end());
+            std::vector<std::string> attempts = { mod + "/__init__.soul", mod + "/__init__.py", mod + ".soul", mod + ".py", mod + ".h", mod + ".c", mod };
 
             bool found = false;
             for (const auto& path : searchPaths) {
                 if (found) break;
                 for (const auto& tryName : attempts) {
                     std::string fullPath = (path.empty() ? "" : path + "/") + tryName;
-                    if (includedFiles.count(fullPath)) {
-                        found = true;
-                        result += "// Skipped " + fullPath + "\n";
-                        break;
-                    }
-
+                    bool already = false;
+                    for (const auto& f : globalIncludedFiles) if (f == fullPath) { already = true; break; }
+                    if (already) { found = true; break; }
                     std::ifstream imp(fullPath);
                     if (imp.good()) {
-                        includedFiles.insert(fullPath);
+                        globalIncludedFiles.push_back(fullPath);
                         std::string impSrc((std::istreambuf_iterator<char>(imp)), std::istreambuf_iterator<char>());
-                        if (isImport && importPos == 0) {
-                            result += "__module__ " + mod + "\n";
-                            result += preprocess(impSrc, path);
-                            result += "\n__endmodule__\n";
-                        } else {
-                            result += preprocess(impSrc, path) + "\n";
-                        }
-                        found = true;
-                        break;
+                        if (isImport) result += "__module__ " + mod + "\n" + preprocess(impSrc, path, includePaths) + "\n__endmodule__\n";
+                        else result += preprocess(impSrc, path, includePaths) + "\n";
+                        found = true; break;
                     }
                 }
             }
-            
-            if (!found) {
-                 if (includePos == 0) result += "// " + line + "\n";
-            }
-        } else {
-            result += line + "\n";
-        }
+        } else result += line + "\n";
     }
     return result;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) return 1;
-    std::ifstream file(argv[1]);
-    std::string rawSource((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    
-    // Preprocess Import Modules
-    std::string source = preprocess(rawSource);
-    
-    Lexer lexer(source, true); // Python mode enabled
-    Compiler compiler(lexer.tokenize());
-    auto bc = compiler.compile();
-    std::ofstream out(argv[2], std::ios::binary);
-    out.write("CASM", 4); // BRANDED: Compiled Assembly
-    out.write((char*)bc.data(), bc.size());
-    return 0;
+    try {
+        std::cerr << "--- SoulC START ---" << std::endl;
+        std::string inputPath, outputPath;
+        std::vector<std::string> includePaths;
+        bool verbose = false, forcePython = false, forceCpp = false;
+
+        if (argc < 2) {
+            std::cerr << "Usage: soulc [options] <input_file>" << std::endl;
+            return 1;
+        }
+
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "-o" && i + 1 < argc) outputPath = argv[++i];
+            else if (arg == "-I" && i + 1 < argc) includePaths.push_back(argv[++i]);
+            else if (arg == "-v") verbose = true;
+            else if (arg == "--python") forcePython = true;
+            else if (arg == "--cpp") forceCpp = true;
+            else if (arg[0] != '-') inputPath = arg;
+        }
+
+        if (inputPath.empty()) { std::cerr << "No input file specified" << std::endl; return 1; }
+        if (outputPath.empty()) {
+            size_t lastDot = inputPath.find_last_of(".");
+            outputPath = (lastDot == std::string::npos ? inputPath : inputPath.substr(0, lastDot)) + ".casm";
+        }
+
+        std::ifstream file(inputPath);
+        if (!file.good()) { std::cerr << "Cannot open input file" << std::endl; return 1; }
+        std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        std::cerr << "File read: " << source.size() << " bytes" << std::endl;
+        source = preprocess(source, ".", includePaths);
+        std::cerr << "Preprocessed: " << source.size() << " bytes" << std::endl;
+        
+        bool pythonMode = forcePython || (!forceCpp && (inputPath.find(".py") != std::string::npos || inputPath.find(".soul") != std::string::npos));
+        Lexer lexer(source, pythonMode);
+        Compiler compiler(lexer.tokenize(), verbose);
+        auto bc = compiler.compile();
+        
+        std::ofstream out(outputPath, std::ios::binary);
+        out.write("CASM", 4);
+        out.write((char*)bc.data(), bc.size());
+        if (verbose) std::cout << "Compiled successfully" << std::endl;
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown error occurred" << std::endl;
+        return 1;
+    }
 }
