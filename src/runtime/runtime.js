@@ -49,28 +49,25 @@ class SoulVM {
             outputMode: config.outputMode || false, // Capture output instead of logging
             ...config
         };
-        this.stack = []; this.callStack = []; this.variables = new Map();
-        this.variables.set('True', true); this.variables.set('False', false); this.variables.set('None', null);
+        this.stack = [];
+        this.callStack = [];
+        this.variables = new Map();
+        this.frames = [new Map()];
         this.memory = new Uint8Array(this.config.maxMemory);
         this.heapStart = Math.floor(this.config.maxMemory / 2); this.heapOffset = this.heapStart;
         this.pc = 0; this.running = false;
         this.handles = new Map(); this.nextFD = 3;
-
-        // Output Buffer for Output Mode
         this.capturedOutput = [];
-
-        // Memory Management
         this.freeList = null;
-        this.allocatedSizes = new Map(); // addr -> size for free(ptr)
-
-        // Improved RAM FS
+        this.allocatedSizes = new Map();
         this.ramFS = new Map();
         this.atexitHandlers = [];
         this.atQuickExitHandlers = [];
 
-        // Detect Environment
         this.isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
         if (this.isNode) this.fs = require('fs');
+
+        this.variables.set('True', true); this.variables.set('False', false); this.variables.set('None', null);
     }
 
     /**
@@ -171,6 +168,8 @@ class SoulVM {
 
         while (this.running && this.pc < len) {
             const op = bc[this.pc++];
+            // console.log("Op: 0x" + op.toString(16) + " at PC " + (this.pc - 1));
+            if (process.env.DEBUG_VM) console.log("Op: 0x" + op.toString(16) + " at PC " + (this.pc - 1));
             // INLINED EXECUTE
             switch (op) {
                 case 0x00: this.running = false; break;
@@ -179,8 +178,19 @@ class SoulVM {
                     break;
                 case 0x02: this.stack.push(this.readString()); break;
                 case 0x03: this.handleSyscall(bc[this.pc++]); break;
-                case 0x04: { const n = this.readString(); this.variables.set(n, this.stack.pop()); } break;
-                case 0x05: this.stack.push(this.variables.get(this.readString())); break;
+                case 0x04: { // STORE
+                    const n = this.readString(); const v = this.stack.pop();
+                    this.frames[this.frames.length - 1].set(n, v);
+                } break;
+                case 0x05: { // LOAD
+                    const n = this.readString();
+                    let val = undefined;
+                    for (let i = this.frames.length - 1; i >= 0; i--) {
+                        if (this.frames[i].has(n)) { val = this.frames[i].get(n); break; }
+                    }
+                    if (val === undefined) val = this.variables.get(n);
+                    this.stack.push(val);
+                } break;
                 case 0x06: this.stack.push(this.stack.pop() + this.stack.pop()); break;
                 case 0x07: { const b = this.stack.pop(); this.stack.push(this.stack.pop() - b); } break;
                 case 0x08: this.stack.push(this.stack.pop() * this.stack.pop()); break;
@@ -197,12 +207,25 @@ class SoulVM {
                 // ... (Common Ops inlined for speed, others function call overhead is negligible relative to logic)
                 case 0x0C: // CALL
                     {
-                        const name = this.readString(); const target = this.variables.get(name);
-                        if (typeof target === 'function') { const r = target.call(this); if (r !== undefined) this.stack.push(r); }
-                        else if (target !== undefined) { this.callStack.push(this.pc); this.pc = target; }
-                        else { console.error("Undefined function: " + name); this.running = false; }
+                        const name = this.readString();
+                        let target = undefined;
+                        for (let i = this.frames.length - 1; i >= 0; i--) {
+                            if (this.frames[i].has(name)) { target = this.frames[i].get(name); break; }
+                        }
+                        if (target === undefined) target = this.variables.get(name);
+
+                        if (typeof target === 'function') {
+                            const r = target.call(this); if (r !== undefined) this.stack.push(r);
+                        } else if (target !== undefined) {
+                            this.frames.push(new Map());
+                            this.callStack.push(this.pc);
+                            this.pc = target;
+                        } else { console.error("Undefined function: " + name); this.running = false; }
                     } break;
-                case 0x0D: this.pc = this.callStack.pop(); break;
+                case 0x0D: // RET
+                    this.frames.pop();
+                    this.pc = this.callStack.pop();
+                    break;
                 case 0x0E: // FOR_ITER (target)
                     {
                         const target = (bc[this.pc++] << 24) | (bc[this.pc++] << 16) | (bc[this.pc++] << 8) | (bc[this.pc++]);
@@ -266,10 +289,10 @@ class SoulVM {
                 // Actually, V8 handles large switches well. Let's keep common ones here.
 
                 default:
-                    // Fallback to method-based dispatch for less common ops to de-clutter generic loop? 
-                    // No, for "FAST" we should just handle them or delegate.
-                    // Re-implementing delegation for complex ops to avoid code duplication in this file updates.
-                    this.executeComplex(op);
+                    if (!this.executeComplex(op)) {
+                        console.error("Unknown opcode: 0x" + op.toString(16) + " at PC " + (this.pc - 1));
+                        this.running = false;
+                    }
                     break;
             }
         }
@@ -281,34 +304,35 @@ class SoulVM {
 
     executeComplex(op) {
         switch (op) {
-            case 0x52: { // READ_ADDR (sz, addr)
-                const sz = this.bytecode[this.pc++]; const a = this.stack.pop();
-                if (sz === 1) this.stack.push(this.memory[a]);
-                else if (sz === 8) this.stack.push(new DataView(this.memory.buffer).getFloat64(a, true));
-                else this.stack.push(new DataView(this.memory.buffer).getInt32(a, true));
+            case 0x52: { // READ_ADDR (sz, pc_sz, addr, idx)
+                const sz = this.bytecode[this.pc++];
+                const idx = this.stack.pop(); const a = this.stack.pop();
+                if (typeof a === 'object' || Array.isArray(a) || typeof a === 'string') {
+                    this.stack.push(a[idx]);
+                } else if (sz === 1) this.stack.push(this.memory[a + idx]);
+                else if (sz === 8) this.stack.push(new DataView(this.memory.buffer).getFloat64(a + idx * 8, true));
+                else this.stack.push(new DataView(this.memory.buffer).getInt32(a + idx * 4, true));
             } break;
-            case 0x53: { // WRITE_ADDR (sz, val, addr)
-                const sz = this.bytecode[this.pc++]; const v = this.stack.pop(); const a = this.stack.pop();
-                if (sz === 1) this.memory[a] = v & 0xFF;
-                else if (sz === 8) new DataView(this.memory.buffer).setFloat64(a, v, true);
-                else new DataView(this.memory.buffer).setInt32(a, v, true);
+            case 0x53: { // WRITE_ADDR (sz, pc_sz, addr, idx, val)
+                const sz = this.bytecode[this.pc++];
+                const v = this.stack.pop(); const idx = this.stack.pop(); const a = this.stack.pop();
+                if (typeof a === 'object' || Array.isArray(a)) {
+                    a[idx] = v;
+                } else if (sz === 1) this.memory[a + idx] = v & 0xFF;
+                else if (sz === 8) new DataView(this.memory.buffer).setFloat64(a + idx * 8, v, true);
+                else new DataView(this.memory.buffer).setInt32(a + idx * 4, v, true);
             } break;
-            case 0x50: this.stack.push(this.malloc(this.stack.pop())); break; // MALLOC
             case 0x51: this.freeByAddr(this.stack.pop()); break; // FREE
-            case 0x54: // ADDR_OF
-                {
-                    const n = this.readString();
-                    this.stack.push(n);
-                } break;
+            case 0x54: { const n = this.readString(); this.stack.push(n); } break; // ADDR_OF
 
             // Advanced Data Structures (0x90+)
             case 0x90: this.stack.push(new Set()); break;
-            case 0x91: { const val = this.stack.pop(); const s = this.stack.pop(); if (s instanceof Set) s.add(val); } break;
+            case 0x91: { const v = this.stack.pop(); const s = this.stack.pop(); if (s instanceof Set) s.add(v); this.stack.push(s); } break;
             case 0x92: this.stack.push(new Map()); break;
-            case 0x93: { const val = this.stack.pop(); const key = this.stack.pop(); const m = this.stack.pop(); if (m instanceof Map) m.set(key, val); } break;
-            case 0x94: { const key = this.stack.pop(); const m = this.stack.pop(); this.stack.push(m instanceof Map ? m.get(key) : undefined); } break;
+            case 0x93: { const v = this.stack.pop(); const k = this.stack.pop(); const d = this.stack.pop(); if (d instanceof Map) d.set(k, v); this.stack.push(d); } break;
+            case 0x94: { const k = this.stack.pop(); const d = this.stack.pop(); this.stack.push(d instanceof Map ? d.get(k) : undefined); } break;
             case 0x95: this.stack.push([]); break;
-            case 0x96: { const val = this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.push(val); } break;
+            case 0x96: { const v = this.stack.pop(); const l = this.stack.pop(); if (Array.isArray(l)) l.push(v); this.stack.push(l); } break;
             case 0x97: { const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.shift() : undefined); } break;
             case 0x98: { const l = this.stack.pop(); this.stack.push(Array.isArray(l) ? l.pop() : undefined); } break;
 
@@ -336,8 +360,10 @@ class SoulVM {
                 } break;
             case 0xC2: { const s = this.stack.pop(); const end = Date.now() + (s * 1000); while (Date.now() < end); this.stack.push(null); } break;
 
-            default: this.running = false;
+            case 0xE7: { /* qsort placeholder */ } break;
+            default: return false;
         }
+        return true;
     }
 
     // Helper to print output
@@ -355,24 +381,25 @@ class SoulVM {
 
     handleSyscall(id) {
         switch (id) {
-            case 0x60: // printf
+            case 0x60: // printf/print
                 {
                     const count = this.stack.pop();
                     const args = []; for (let i = 0; i < count; i++) args.push(this.stack.pop());
                     args.reverse();
+                    if (args.length === 0) { this.print("\n"); break; }
                     const arg0 = args.shift();
-                    let out;
-                    if (typeof arg0 !== 'string' && typeof arg0 !== 'number') {
-                        out = String(arg0);
-                        if (args.length > 0) out += " " + args.join(" ");
-                    } else {
-                        const fmt = this.getString(arg0);
-                        out = fmt.replace(/%d|%s|%f/g, (m) => {
+                    const fmt = this.getString(arg0);
+                    if (typeof fmt === 'string' && (fmt.includes('%s') || fmt.includes('%d'))) {
+                        const out = fmt.replace(/%d|%s|%f/g, (m) => {
                             const v = args.shift();
                             return (m === "%s") ? this.getString(v) : v;
                         }).replace(/\\n/g, '\n');
+                        this.print(out);
+                    } else {
+                        // Python style print: join all with spaces
+                        const out = [fmt, ...args.map(a => (typeof a === 'object' ? JSON.stringify(a) : this.getString(a)))].join(" ") + "\n";
+                        this.print(out);
                     }
-                    this.print(out);
                 } break;
             case 0x61: // puts(s) — C: print string + newline
                 { const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) args.unshift(this.stack.pop()); const s = args[0]; this.print(this.getString(s) + '\n'); } break;
@@ -449,9 +476,6 @@ class SoulVM {
             case 0xC6: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const pred = a[0]; if (Array.isArray(l) && typeof pred === 'function') { let j = 0; for (let i = 0; i < l.length; i++) if (!pred(l[i])) l[j++] = l[i]; l.length = j; } } break;
             case 0xC7: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const o = a[0]; const eq = Array.isArray(l) && Array.isArray(o) && l.length === o.length && l.every((x, i) => x === o[i]); this.stack.push(eq ? 1 : 0); } break;
             case 0xC8: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); const o = a[0]; let cmp = 0; if (Array.isArray(l) && Array.isArray(o)) { for (let i = 0; i < Math.min(l.length, o.length); i++) { if (l[i] < o[i]) { cmp = -1; break; } if (l[i] > o[i]) { cmp = 1; break; } } if (cmp === 0) cmp = l.length < o.length ? -1 : l.length > o.length ? 1 : 0; } this.stack.push(cmp); } break;
-            case 0x96: { const n = this.stack.pop(); const a = []; for (let i = 0; i < n; i++) a.unshift(this.stack.pop()); const l = this.stack.pop(); if (Array.isArray(l) && n >= 1) l.push(a[0]); } break;
-            case 0x97: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l.shift() : undefined); } break;
-            case 0x98: { const n = this.stack.pop(); for (let i = 0; i < n; i++) this.stack.pop(); const l = this.stack.pop(); this.stack.push(Array.isArray(l) && l.length ? l.pop() : undefined); } break;
 
             // C memory
             case 0xD0: { this.stack.pop(); const n = this.stack.pop(); this.stack.push(this.malloc(n)); } break;
@@ -473,6 +497,21 @@ class SoulVM {
             case 0xE3: { this.stack.pop(); const fn = this.stack.pop(); if (typeof fn === 'number') this.atQuickExitHandlers.push(fn); } break;
             case 0xE4: if (this.isNode) { while (this.atQuickExitHandlers.length) this.atQuickExitHandlers.pop(); process.exit(this.stack.pop() || 0); } break;
             case 0xE5: { this.stack.pop(); const k = this.getString(this.stack.pop()); this.stack.push(this.isNode && process.env ? (process.env[k] || 0) : 0); } break;
+            case 0xE8: // range
+                {
+                    const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) args.unshift(this.stack.pop());
+                    let start = 0, stop = 0, step = 1;
+                    if (count === 1) stop = args[0]; else if (count === 2) { start = args[0]; stop = args[1]; } else if (count >= 3) { start = args[0]; stop = args[1]; step = args[2]; }
+                    const r = []; for (let i = start; step > 0 ? i < stop : i > stop; i += step) r.push(i); this.stack.push(r);
+                } break;
+            case 0xE9: { const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) args.push(this.stack.pop()); this.stack.push(Math.max(...args)); } break;
+            case 0xEA: { const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) args.push(this.stack.pop()); this.stack.push(Math.min(...args)); } break;
+            case 0xEB: { const count = this.stack.pop(); const args = []; for (let i = 0; i < count; i++) { const v = this.stack.pop(); if (Array.isArray(v)) args.push(...v); else args.push(v); } this.stack.push(args.reduce((a, b) => a + b, 0)); } break;
+            case 0xEC: { const count = this.stack.pop(); const v = this.stack.pop(); if (Array.isArray(v)) this.stack.push([...v].sort()); else this.stack.push(v); } break;
+            case 0xED: { this.stack.pop(); this.stack.push(parseInt(this.stack.pop())); } break;
+            case 0xEE: { this.stack.pop(); this.stack.push(parseFloat(this.stack.pop())); } break;
+            case 0xEF: { this.stack.pop(); this.stack.push(String(this.stack.pop())); } break;
+            case 0xF0: { this.stack.pop(); this.stack.push(!!this.stack.pop()); } break;
             case 0xE6: { // bsearch: key, base (array), nmemb, size, compar -> index or 0
                 this.stack.pop();
                 const comparFn = this.stack.pop();
@@ -569,5 +608,9 @@ if (typeof process !== 'undefined' && process.argv && process.argv.length > 2) {
 
     const vm = new SoulVM({ useRamFS });
     const fileArg = process.argv.find((arg, i) => i > 1 && !arg.startsWith('--'));
-    if (fileArg) vm.load(fileArg).then(() => vm.run());
+    if (fileArg) vm.load(fileArg)
+        .then(() => {
+            try { vm.run(); } catch (e) { console.error("Runtime Error:", e); }
+        })
+        .catch(e => console.error("Load Error:", e));
 }

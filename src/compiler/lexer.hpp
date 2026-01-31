@@ -56,10 +56,12 @@ public:
                 if (indent > indentStack.back()) {
                     indentStack.push_back(indent);
                     tokens.push_back({TokenType::INDENT, std::to_string(indent), line});
+                    printf("Lexer: INDENT %d at line %d\n", indent, line);
                 } else {
                     while (indent < indentStack.back()) {
                         indentStack.pop_back();
                         tokens.push_back({TokenType::DEDENT, "", line});
+                        printf("Lexer: DEDENT at line %d\n", line);
                     }
                 }
                 if (pos >= source.length()) break;
@@ -150,7 +152,7 @@ private:
             // C/C++ core
             {"int", TokenType::KEYWORD}, {"if", TokenType::KEYWORD}, {"else", TokenType::KEYWORD},
             {"while", TokenType::KEYWORD}, {"def", TokenType::KEYWORD}, {"return", TokenType::KEYWORD},
-            {"class", TokenType::KEYWORD}, {"print", TokenType::KEYWORD}, {"import", TokenType::KEYWORD},
+            {"class", TokenType::KEYWORD}, {"import", TokenType::KEYWORD},
             {"using", TokenType::KEYWORD}, {"namespace", TokenType::KEYWORD}, {"static", TokenType::KEYWORD},
             {"void", TokenType::KEYWORD}, {"public", TokenType::KEYWORD}, {"for", TokenType::KEYWORD},
             {"in", TokenType::KEYWORD}, {"try", TokenType::KEYWORD}, {"except", TokenType::KEYWORD},
