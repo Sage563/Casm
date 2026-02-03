@@ -19,7 +19,53 @@ enum OpCode {
     MOD = 0x12, LSHIFT = 0x13, RSHIFT = 0x14, BIT_AND = 0x15, BIT_OR = 0x16, BIT_XOR = 0x17, BIT_NOT = 0x18,
     EQ = 0x19, NE = 0x1A, LT = 0x1B, LE = 0x1C, GT = 0x1D, GE = 0x1E,
     LOGIC_AND = 0x1F, LOGIC_OR = 0x20, LOGIC_NOT = 0x21,
-    MALLOC = 0x50, FREE = 0x51, READ_ADDR = 0x52, WRITE_ADDR = 0x53, ADDR_OF = 0x54
+    
+    // WASM-like: Stack Manipulation & Arithmetic
+    NEG = 0x22, INC = 0x23, DEC = 0x24, ABS = 0x25,
+    MIN = 0x26, MAX = 0x27, CLAMP = 0x28,
+    I32_TO_F32 = 0x29, F32_TO_I32 = 0x2A, I32_TO_I64 = 0x2B, I64_TO_I32 = 0x2C,
+    DUP = 0x2D, SWAP = 0x2E, ROT = 0x2F, DROP = 0x30, PICK = 0x31,
+    
+    // Memory operations (Relocated)
+    MALLOC = 0xE0, FREE = 0xE1, READ_ADDR = 0xE2, WRITE_ADDR = 0xE3, ADDR_OF = 0xE4,
+    
+    // WASM-like: Module System & Function Tables
+    EXPORT = 0x5B, IMPORT = 0x5C, MODULE_GET = 0x5D, // Re-assigned from conflicting range
+    TABLE_GET = 0x58, TABLE_SET = 0x59, CALL_INDIRECT = 0x5A,
+    
+    // WASM-like: Enhanced Memory Operations (Relocated)
+    MEMORY_SIZE = 0xE5, MEMORY_GROW = 0xE6, MEMORY_COPY = 0xE7, MEMORY_FILL = 0xE8,
+    
+    // WASM-like: Standard I32 Opcodes (New)
+    I32_EQZ = 0x45, I32_EQ = 0x46, I32_NE = 0x47, I32_LT_S = 0x48, I32_LT_U = 0x49,
+    I32_GT_S = 0x4A, I32_GT_U = 0x4B, I32_LE_S = 0x4C, I32_LE_U = 0x4D, I32_GE_S = 0x4E, I32_GE_U = 0x4F,
+    
+    // WASM-like: Standard I64 Opcodes
+    I64_EQZ = 0x50, I64_EQ = 0x51, I64_NE = 0x52, I64_LT_S = 0x53, I64_LT_U = 0x54,
+    I64_GT_S = 0x55, I64_GT_U = 0x56, I64_LE_S = 0x57, I64_LE_U = 0x58, I64_GE_S = 0x59, I64_GE_U = 0x5A,
+    
+    // WASM-like: Standard F32 Opcodes (New)
+    F32_EQ = 0x5B, F32_NE = 0x5C, F32_LT = 0x5D, F32_GT = 0x5E, F32_LE = 0x5F, F32_GE = 0x60,
+    
+    // WASM-like: Standard F64 Opcodes (New)
+    F64_EQ = 0x61, F64_NE = 0x62, F64_LT = 0x63, F64_GT = 0x64, F64_LE = 0x65, F64_GE = 0x66,
+    
+    // WASM-like: Memory Operations (Relocated)
+    
+    LOAD_I8 = 0x5F, LOAD_I16 = 0x61, LOAD_U16 = 0x62,
+    LOAD_F32 = 0x64, LOAD_F64 = 0x65,
+    STORE_I8 = 0x66, STORE_I16 = 0x67, STORE_I32 = 0x68,
+    STORE_F32 = 0x69, STORE_F64 = 0x6A,
+    JNZ = 0x6B, JGT = 0x6C, JLT = 0x6D,
+    
+    // WASM-like: Type System
+    TYPE_OF = 0x74, TYPE_CHECK = 0x75, TYPE_CAST = 0x76,
+    
+    // WASM-like: Profiling & Debugging
+    PROFILE_START = 0x77, PROFILE_END = 0x78, BREAKPOINT = 0x79, TRACE = 0x7A,
+    
+    // WASM-like: Atomic Operations
+    ATOMIC_LOAD = 0x7B, ATOMIC_STORE = 0x7C, ATOMIC_ADD = 0x7D
 };
 
 struct Field { std::string name; int offset; };
@@ -88,13 +134,16 @@ private:
     bool pythonMode;
 
     bool isDeclModifier(const std::string& v) {
-        return (v == "static" || v == "extern" || v == "public" || v == "private" || v == "async" || v == "readonly" || v == "sealed" || v == "typedef" ||
-                v == "alignas" || v == "alignof" || v == "asm" || v == "auto" || v == "const" || v == "consteval" || v == "constexpr" || v == "constinit" ||
-                v == "explicit" || v == "export" || v == "inline" || v == "mutable" || v == "register" || v == "thread_local" || v == "virtual" || v == "volatile" ||
-                v == "template" || v == "typename" || v == "concept" || v == "requires" || v == "noexcept" || v == "friend" ||
-                v == "restrict" ||
-                v == "_Alignas" || v == "_Alignof" || v == "_Atomic" || v == "_Bool" || v == "_Complex" || v == "_Generic" || v == "_Imaginary" ||
-                v == "_Noreturn" || v == "_Static_assert" || v == "_Thread_local" || v == "typeof" || v == "typeof_unqual");
+        static const std::set<std::string> modifiers = {
+            "static", "extern", "public", "private", "protected", "async", "readonly", "sealed", "typedef",
+            "alignas", "alignof", "asm", "auto", "const", "consteval", "constexpr", "constinit",
+            "explicit", "export", "inline", "mutable", "register", "thread_local", "virtual", "volatile",
+            "template", "typename", "concept", "requires", "noexcept", "friend", "restrict", "override", "final",
+            "operator", "this", "new", "delete", "throw", "co_await", "co_return", "co_yield", "decltype",
+            "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary",
+            "_Noreturn", "_Static_assert", "_Thread_local", "typeof", "typeof_unqual"
+        };
+        return modifiers.count(v);
     }
 
     void skipAlignasAlignof() {
@@ -440,6 +489,42 @@ private:
     }
 
     void emitBinaryOp(TokenType type) {
+        // PEEPHOLE OPTIMIZATION: Constant Folding
+        // Check if the last two instructions were PUSH_INT
+        if (bytecode.size() >= 10 && 
+            bytecode[bytecode.size() - 5] == PUSH_INT && 
+            bytecode[bytecode.size() - 10] == PUSH_INT) {
+            
+            // Extract values
+            int v2 = (bytecode[bytecode.size()-4] << 24) | (bytecode[bytecode.size()-3] << 16) | (bytecode[bytecode.size()-2] << 8) | bytecode[bytecode.size()-1];
+            int v1 = (bytecode[bytecode.size()-9] << 24) | (bytecode[bytecode.size()-8] << 16) | (bytecode[bytecode.size()-7] << 8) | bytecode[bytecode.size()-6];
+            
+            bool optimized = true;
+            int result = 0;
+            
+            switch (type) {
+                case TokenType::PLUS: result = v1 + v2; break;
+                case TokenType::MINUS: result = v1 - v2; break;
+                case TokenType::STAR: result = v1 * v2; break;
+                case TokenType::SLASH: if(v2 == 0) optimized = false; else result = v1 / v2; break;
+                case TokenType::MOD: if(v2 == 0) optimized = false; else result = v1 % v2; break;
+                case TokenType::LSHIFT: result = v1 << v2; break;
+                case TokenType::RSHIFT: result = v1 >> v2; break;
+                case TokenType::AMPERSAND: result = v1 & v2; break;
+                case TokenType::PIPE: result = v1 | v2; break;
+                case TokenType::CARET: result = v1 ^ v2; break;
+                default: optimized = false; break;
+            }
+            
+            if (optimized) {
+                // Remove last 10 bytes
+                bytecode.resize(bytecode.size() - 10);
+                emitPushInt(result);
+                if (verbose) std::cout << "Optimized: " << v1 << " op " << v2 << " -> " << result << std::endl;
+                return;
+            }
+        }
+
         switch (type) {
             case TokenType::PLUS: emitOp(ADD); break;
             case TokenType::MINUS: emitOp(SUB); break;
@@ -566,7 +651,7 @@ private:
             name = t.value;
         } else if (t.type == TokenType::INTEGER) { 
             try { emitPushInt(std::stoi(t.value)); } catch(...) { emitPushInt(0); }
-        } else if (t.type == TokenType::STRING) { emitOp(PUSH_STR); emitString(t.value); }
+        } else if (t.type == TokenType::STRING) { emitOp(PUSH_STR); emitStringLiteral(t.value); }
         
         while (pos < tokens.size()) {
             if (tokens[pos].type == TokenType::DOT || tokens[pos].type == TokenType::ARROW) {
@@ -592,10 +677,30 @@ private:
                 else if (name == "system") { emitPushInt(count); emitSyscall(0xC1); name = ""; }
                 else if (name == "time.sleep") { emitPushInt(count); emitSyscall(0xC2); name = ""; }
                 else if (name == "math.sqrt") { emitPushInt(count); emitSyscall(0xB0); name = ""; }
-                else if (name == "abs") { emitPushInt(count); emitSyscall(0xB1); name = ""; }
+                // OPTIMIZATION: Use ABS opcode instead of syscall
+                else if (name == "abs") { emitAbs(); name = ""; }
+                // OPTIMIZATION: Use MIN/MAX opcodes instead of built-in functions
+                else if (name == "min" || name == "MIN") { emitMin(); name = ""; }
+                else if (name == "max" || name == "MAX") { emitMax(); name = ""; }
+                else if (name == "fopen") { emitPushInt(count); emitSyscall(0x70); name = ""; }
+                else if (name == "fprintf") { emitPushInt(count); emitSyscall(0x71); name = ""; }
+                else if (name == "fclose") { emitPushInt(count); emitSyscall(0x72); name = ""; }
+                else if (name == "time") { emitPushInt(count); emitSyscall(0x80); name = ""; }
+                else if (name == "ctime") { emitPushInt(count); emitSyscall(0x81); name = ""; }
+                else if (name == "memcpy") { emitPushInt(count); emitSyscall(0xD5); name = ""; }
                 else if (!name.empty()) { emitOp(CALL); emitString(mangle(name)); name = ""; }
-                else { emitOp(CALL); name = ""; } 
+                else {
+                    // Function pointer call: the function address is already on the stack
+                    // We need to emit CALL with the value from the stack
+                    // For now, emit a special pattern that the runtime can handle
+                    emitOp(0x0C); emitString(""); // CALL with empty name triggers indirect call
+                }
             } else if (tokens[pos].type == TokenType::LBRACKET) {
+                // Array indexing: load the array first if we have a name
+                if (!name.empty()) {
+                    emitOp(LOAD); emitString(mangle(name));
+                    name = "";
+                }
                 pos++; parseExpression();
                 if (pos < tokens.size() && tokens[pos].type == TokenType::RBRACKET) pos++;
                 if (pos < tokens.size() && tokens[pos].type == TokenType::EQUALS) {
@@ -633,6 +738,66 @@ private:
     void emitString(const std::string& s) {
         bytecode.push_back((uint8_t)s.length());
         for (char c : s) bytecode.push_back((uint8_t)c);
+    }
+    
+    void emitStringLiteral(const std::string& s) {
+        // Process escape sequences for string literals
+        std::string processed;
+        for (size_t i = 0; i < s.length(); i++) {
+            if (s[i] == '\\' && i + 1 < s.length()) {
+                char next = s[i + 1];
+                if (next == 'n') { processed += '\n'; i++; }
+                else if (next == 't') { processed += '\t'; i++; }
+                else if (next == 'r') { processed += '\r'; i++; }
+                else if (next == '\\') { processed += '\\'; i++; }
+                else if (next == '"') { processed += '"'; i++; }
+                else { processed += s[i]; }
+            } else {
+                processed += s[i];
+            }
+        }
+        bytecode.push_back((uint8_t)processed.length());
+        for (char c : processed) bytecode.push_back((uint8_t)c);
+    }
+    
+    // WASM-like: Emit helper functions for new opcodes
+    void emitNeg() { bytecode.push_back(NEG); }
+    void emitInc() { bytecode.push_back(INC); }
+    void emitDec() { bytecode.push_back(DEC); }
+    void emitAbs() { bytecode.push_back(ABS); }
+    void emitMin() { bytecode.push_back(MIN); }
+    void emitMax() { bytecode.push_back(MAX); }
+    void emitClamp() { bytecode.push_back(CLAMP); }
+    void emitDup() { bytecode.push_back(DUP); }
+    void emitSwap() { bytecode.push_back(SWAP); }
+    void emitRot() { bytecode.push_back(ROT); }
+    void emitDrop() { bytecode.push_back(DROP); }
+    
+    void emitTypedLoad(OpCode op) { bytecode.push_back(op); }
+    void emitTypedStore(OpCode op) { bytecode.push_back(op); }
+    
+    void emitJnz(int target) {
+        bytecode.push_back(JNZ);
+        bytecode.push_back((target >> 24) & 0xFF);
+        bytecode.push_back((target >> 16) & 0xFF);
+        bytecode.push_back((target >> 8) & 0xFF);
+        bytecode.push_back(target & 0xFF);
+    }
+    
+    void emitJgt(int target) {
+        bytecode.push_back(JGT);
+        bytecode.push_back((target >> 24) & 0xFF);
+        bytecode.push_back((target >> 16) & 0xFF);
+        bytecode.push_back((target >> 8) & 0xFF);
+        bytecode.push_back(target & 0xFF);
+    }
+    
+    void emitJlt(int target) {
+        bytecode.push_back(JLT);
+        bytecode.push_back((target >> 24) & 0xFF);
+        bytecode.push_back((target >> 16) & 0xFF);
+        bytecode.push_back((target >> 8) & 0xFF);
+        bytecode.push_back(target & 0xFF);
     }
     void emitSyscall(uint8_t id) { emitOp(SYSCALL); bytecode.push_back(id); }
     void emitPushInt(int val) { emitOp(PUSH_INT); emitInt(val); }
@@ -682,7 +847,12 @@ std::string preprocess(const std::string& source, const std::string& currentDir,
 
             std::vector<std::string> searchPaths = { currentDir, "." };
             searchPaths.insert(searchPaths.end(), includePaths.begin(), includePaths.end());
-            std::vector<std::string> attempts = { mod + "/__init__.soul", mod + "/__init__.py", mod + ".soul", mod + ".py", mod + ".h", mod + ".c", mod };
+            std::vector<std::string> attempts = { 
+                mod + "/__init__.soul", mod + "/__init__.py", 
+                mod + ".soul", mod + ".py", 
+                mod + ".h", mod + ".c", mod + ".cpp", mod + ".hpp", mod + ".cc", mod + ".hh",
+                mod 
+            };
 
             bool found = false;
             for (const auto& path : searchPaths) {
